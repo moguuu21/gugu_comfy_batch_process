@@ -2,7 +2,11 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 function getImageListWidget(node) {
-    return node?.widgets?.find((w) => w.name === "image_list");
+    return node?.widgets?.find((w) => w.name === "image_list") || node?.widgets?.find((w) => w.name === "video_list");
+}
+
+function isVideoListNode(node) {
+    return !!node?.widgets?.find((w) => w.name === "video_list");
 }
 
 function clampInt(v, min, max) {
@@ -77,10 +81,10 @@ function createVNCCSVisualUI(node) {
         return { wrap };
     };
 
-    const azF = mkField("水平角度(azimuth)");
-    const elF = mkField("垂直角度(elevation)");
-    const distF = mkField("远近(distance)");
-    const trigF = mkField("触发词");
+    const azF = mkField("Azimuth");
+    const elF = mkField("Elevation");
+    const distF = mkField("Distance");
+    const trigF = mkField("Include Trigger");
 
     const az = document.createElement("input");
     az.type = "range";
@@ -182,7 +186,7 @@ function setImageList(node, names) {
 }
 
 function getMaxImagesValue(node) {
-    const w = node?.widgets?.find((x) => x.name === "max_images");
+    const w = node?.widgets?.find((x) => x.name === "max_images") || node?.widgets?.find((x) => x.name === "max_videos");
     const v = w?.value;
     return typeof v === "number" ? v : 0;
 }
@@ -357,11 +361,22 @@ async function uploadFilesSequential(node, files, { replace = false } = {}) {
 
     const existing = replace ? [] : parseImageList(w.value);
     const uploaded = [];
+    const isVideo = isVideoListNode(node);
+    const allowVideoExt = new Set([".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"]);
+    const allowImageExt = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 
     for (const file of files) {
         if (!file) continue;
-        // skip non-images
-        if (file?.type && !file.type.startsWith("image/")) continue;
+        const lowerName = (file?.name || "").toLowerCase();
+        if (isVideo) {
+            const hasVideoExt = Array.from(allowVideoExt).some((ext) => lowerName.endsWith(ext));
+            const isVideoMime = !!file?.type && file.type.startsWith("video/");
+            if (!hasVideoExt && !isVideoMime) continue;
+        } else {
+            const hasImageExt = Array.from(allowImageExt).some((ext) => lowerName.endsWith(ext));
+            const isImageMime = !!file?.type && file.type.startsWith("image/");
+            if (!hasImageExt && !isImageMime) continue;
+        }
         const name = await uploadOneImage(file);
         if (name) uploaded.push(name);
     }
@@ -372,9 +387,10 @@ async function uploadFilesSequential(node, files, { replace = false } = {}) {
 }
 
 function openMultiSelect(node, { replace = false } = {}) {
+    const isVideo = isVideoListNode(node);
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/png,image/jpeg";
+    input.accept = isVideo ? "video/*,.mp4,.webm,.avi,.mov,.mkv,.flv,.m4v" : "image/*,.png,.jpg,.jpeg,.webp,.gif";
     input.multiple = true;
     input.style.display = "none";
     document.body.appendChild(input);
@@ -392,9 +408,10 @@ function openMultiSelect(node, { replace = false } = {}) {
 }
 
 function openFolderSelect(node, { replace = false } = {}) {
+    const isVideo = isVideoListNode(node);
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/png,image/jpeg";
+    input.accept = isVideo ? "video/*,.mp4,.webm,.avi,.mov,.mkv,.flv,.m4v" : "image/*,.png,.jpg,.jpeg,.webp,.gif";
     input.multiple = true;
     input.webkitdirectory = true;
     input.directory = true;
@@ -404,7 +421,9 @@ function openFolderSelect(node, { replace = false } = {}) {
     input.onchange = async (e) => {
         try {
             let files = Array.from(e.target.files || []);
-            const allowExt = new Set([".png", ".jpg", ".jpeg"]);
+            const allowExt = isVideo
+                ? new Set([".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"])
+                : new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
             files = files.filter((f) => {
                 const name = (f?.name || "").toLowerCase();
                 for (const ext of allowExt) {
@@ -428,6 +447,9 @@ function createBrowserUI(node) {
     container.style.cssText =
         "width:100%;padding:8px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:6px;margin:5px 0;pointer-events:auto;";
 
+    const isVideo = isVideoListNode(node);
+    const noun = isVideo ? "videos" : "images";
+
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
 
@@ -439,14 +461,14 @@ function createBrowserUI(node) {
         return b;
     };
 
-    const replaceBtn = mkBtn("选择图片");
-    const addBtn = mkBtn("追加图片");
-    const folderBtn = mkBtn("选择文件夹");
-    const queueBtn = mkBtn("逐张入队");
-    const queueOneBtn = mkBtn("入队当前");
+    const replaceBtn = mkBtn(`Select ${noun}`);
+    const addBtn = mkBtn(`Add ${noun}`);
+    const folderBtn = mkBtn("Select Folder");
+    const queueBtn = mkBtn("Queue All");
+    const queueOneBtn = mkBtn("Queue Current");
 
     const clearBtn = document.createElement("button");
-    clearBtn.textContent = "清空";
+    clearBtn.textContent = "Clear";
     clearBtn.style.cssText =
         "padding:8px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;cursor:pointer;font-size:13px;";
 
@@ -466,7 +488,7 @@ function createBrowserUI(node) {
 
     const updateInfo = () => {
         const names = parseImageList(getImageListWidget(node)?.value);
-        info.textContent = `已选择 ${names.length} 张（可拖拽图片到此面板/节点上）`;
+        info.textContent = `Selected ${names.length} ${noun}. Drag-and-drop is supported.`;
     };
 
     const redraw = () => {
@@ -480,15 +502,23 @@ function createBrowserUI(node) {
 
             const thumb = document.createElement("div");
             thumb.style.cssText =
-                "position:relative;aspect-ratio:1;border-radius:4px;overflow:hidden;border:1px solid var(--border-color);background:#000;";
+                "position:relative;aspect-ratio:1;border-radius:4px;overflow:hidden;border:1px solid var(--border-color);background:#111;display:flex;align-items:center;justify-content:center;";
 
-            const img = document.createElement("img");
-            img.src = getViewUrl(name);
-            img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
+            if (!isVideo) {
+                const img = document.createElement("img");
+                img.src = getViewUrl(name);
+                img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
+                thumb.appendChild(img);
+            } else {
+                const icon = document.createElement("div");
+                icon.textContent = "VIDEO";
+                icon.style.cssText = "font-size:11px;opacity:0.9;letter-spacing:0.8px;";
+                thumb.appendChild(icon);
+            }
 
             const del = document.createElement("button");
-            del.textContent = "×";
-            del.title = "删除";
+            del.textContent = "x";
+            del.title = "Remove";
             del.style.cssText =
                 "position:absolute;top:2px;right:2px;width:20px;height:20px;background:rgba(255,0,0,0.75);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:16px;line-height:1;";
             del.onclick = (e) => {
@@ -505,7 +535,6 @@ function createBrowserUI(node) {
             label.style.cssText =
                 "font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0.9;";
 
-            thumb.appendChild(img);
             thumb.appendChild(del);
             cell.appendChild(thumb);
             cell.appendChild(label);
@@ -523,7 +552,6 @@ function createBrowserUI(node) {
         redraw();
     };
 
-    // Most reliable: handle drop on our DOM panel.
     container.addEventListener("dragover", (e) => {
         if (!isFilesDragEvent(e)) return;
         e.preventDefault();
@@ -577,7 +605,13 @@ function createBrowserUI(node) {
 app.registerExtension({
     name: "BatchLoadImages.Extension",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "BatchLoadImages") return;
+        const compatibleNodeNames = new Set([
+            "BatchLoadImages",
+            "gugu_BatchLoadImages",
+            "ComfyUI-IAI666-BatchLoadImages",
+            "gugu_BatchLoadVideos",
+        ]);
+        if (!compatibleNodeNames.has(nodeData.name)) return;
 
         ensureGlobalDragDropPrevention();
 
@@ -596,7 +630,7 @@ app.registerExtension({
             const ui = createBrowserUI(this);
             this._batchLoadImagesUI = ui;
             this.addDOMWidget("batch_load_images", "customwidget", ui.container);
-            this.setSize([420, 320]);
+            this.setSize(isVideoListNode(this) ? [520, 360] : [420, 320]);
 
             _batchLoadImagesDomUIs.add({ node: this, container: ui.container, redraw: ui.redraw, setDragging: ui.setDragging });
 
@@ -653,3 +687,5 @@ app.registerExtension({
         };
     },
 });
+
+

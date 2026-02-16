@@ -1,0 +1,3 @@
+# Runtime dependency for gugu_BatchLoadVideos
+# torch/numpy/Pillow are provided by the host ComfyUI environment.
+av>=10.0.0,<15.0

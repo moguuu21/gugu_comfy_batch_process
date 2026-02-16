@@ -9,6 +9,71 @@ from PIL import Image, ImageOps, ImageSequence
 import folder_paths
 import node_helpers
 
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
+
+
+def _list_videos_from_server_dir(server_video_dir: str):
+    server_video_dir = (server_video_dir or "").strip()
+    if not server_video_dir:
+        return []
+
+    if os.path.isabs(server_video_dir):
+        base_dir = server_video_dir
+    else:
+        base_dir = os.path.join(folder_paths.get_input_directory(), server_video_dir)
+
+    if not os.path.isdir(base_dir):
+        return []
+
+    results = []
+    for root, _, files in os.walk(base_dir):
+        for file_name in files:
+            ext = os.path.splitext(file_name)[1].lower()
+            if ext in VIDEO_EXTENSIONS:
+                abs_path = os.path.join(root, file_name)
+                rel_path = os.path.relpath(abs_path, folder_paths.get_input_directory())
+                results.append(rel_path.replace("\\", "/"))
+    results.sort()
+    return results
+
+
+def _resolve_video_path(name: str):
+    if not name:
+        return None
+
+    name = name.strip()
+    if not name:
+        return None
+
+    if folder_paths.exists_annotated_filepath(name):
+        return folder_paths.get_annotated_filepath(name)
+
+    if os.path.isfile(name):
+        return name
+
+    candidate = os.path.join(folder_paths.get_input_directory(), name)
+    if os.path.isfile(candidate):
+        return candidate
+
+    return None
+
+
+def _select_videos(video_list: str, max_videos: int, mode: str, index: int, server_video_dir: str):
+    names = [x.strip() for x in (video_list or "").splitlines()]
+    names = [x for x in names if x]
+
+    if server_video_dir and server_video_dir.strip():
+        names = _list_videos_from_server_dir(server_video_dir)
+
+    if max_videos and max_videos > 0:
+        names = names[:max_videos]
+
+    if mode == "single" and names:
+        index = max(0, min(index, len(names) - 1))
+        names = [names[index]]
+
+    return names
+
 
 class BatchLoadImages:
     @classmethod
@@ -28,7 +93,7 @@ class BatchLoadImages:
             }
         }
 
-    CATEGORY = "ComfyUI-IAI666-BatchLoadImages"
+    CATEGORY = "gugu/utools/IO"
 
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("images", "filenames")
@@ -155,6 +220,181 @@ class BatchLoadImages:
         if not valid:
             return "No valid images in image_list"
 
+        return True
+
+
+class GuguBatchLoadVideos:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video_list": ("STRING", {"multiline": True, "default": ""}),
+                "max_videos": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+                "mode": (["batch", "single"], {"default": "single"}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+                "skip_frames": ("INT", {"default": 0, "min": 0, "max": 1000000, "step": 1}),
+                "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": 1000000, "step": 1}),
+                "select_every_nth": ("INT", {"default": 1, "min": 1, "max": 1000, "step": 1}),
+                "server_video_dir": ("STRING", {"default": ""}),
+            }
+        }
+
+    CATEGORY = "gugu/utools/IO"
+    RETURN_TYPES = ("IMAGE", "FLOAT", "STRING")
+    RETURN_NAMES = ("images", "fps", "filenames")
+    FUNCTION = "load_videos"
+
+    def load_videos(
+        self,
+        video_list: str,
+        max_videos: int,
+        mode: str,
+        index: int,
+        skip_frames: int,
+        frame_load_cap: int,
+        select_every_nth: int,
+        server_video_dir: str = "",
+    ):
+        try:
+            import av
+        except ImportError as e:
+            raise ImportError("PyAV is required for gugu_BatchLoadVideos. Install with: pip install av") from e
+
+        names = _select_videos(video_list, max_videos, mode, index, server_video_dir)
+        if not names:
+            raise ValueError("video_list is empty")
+
+        output_frames = []
+        output_names = []
+        fps_values = []
+        expected_hw = None
+
+        for name in names:
+            video_path = _resolve_video_path(name)
+            if not video_path:
+                continue
+
+            try:
+                with av.open(video_path) as container:
+                    video_stream = next((s for s in container.streams if s.type == "video"), None)
+                    if video_stream is None:
+                        continue
+
+                    fps_value = 0.0
+                    if video_stream.average_rate is not None:
+                        fps_value = float(video_stream.average_rate)
+                    elif video_stream.base_rate is not None:
+                        fps_value = float(video_stream.base_rate)
+                    if fps_value > 0:
+                        fps_values.append(fps_value)
+
+                    decoded_index = 0
+                    loaded_count = 0
+
+                    for frame in container.decode(video_stream):
+                        if decoded_index < skip_frames:
+                            decoded_index += 1
+                            continue
+
+                        post_skip_index = decoded_index - skip_frames
+                        decoded_index += 1
+
+                        if select_every_nth > 1 and (post_skip_index % select_every_nth) != 0:
+                            continue
+
+                        rgb = frame.to_ndarray(format="rgb24")
+                        h, w = rgb.shape[0], rgb.shape[1]
+                        if expected_hw is None:
+                            expected_hw = (h, w)
+                        if (h, w) != expected_hw:
+                            continue
+
+                        arr = rgb.astype(np.float32) / 255.0
+                        output_frames.append(torch.from_numpy(arr)[None,])
+                        loaded_count += 1
+
+                        if frame_load_cap > 0 and loaded_count >= frame_load_cap:
+                            break
+
+                    if loaded_count > 0:
+                        output_names.append(name)
+            except Exception:
+                continue
+
+        if not output_frames:
+            raise ValueError("No valid video frames found")
+
+        output_tensor = torch.cat(output_frames, dim=0)
+        avg_fps = float(sum(fps_values) / len(fps_values)) if fps_values else 0.0
+        return (output_tensor, avg_fps, "\n".join(output_names))
+
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        video_list: str,
+        max_videos: int,
+        mode: str,
+        index: int,
+        skip_frames: int,
+        frame_load_cap: int,
+        select_every_nth: int,
+        server_video_dir: str = "",
+    ):
+        m = hashlib.sha256()
+        names = _select_videos(video_list, max_videos, mode, index, server_video_dir)
+
+        m.update(str(mode).encode("utf-8"))
+        m.update(str(index).encode("utf-8"))
+        m.update(str(max_videos).encode("utf-8"))
+        m.update(str(skip_frames).encode("utf-8"))
+        m.update(str(frame_load_cap).encode("utf-8"))
+        m.update(str(select_every_nth).encode("utf-8"))
+        m.update((server_video_dir or "").encode("utf-8"))
+
+        for name in names:
+            m.update(name.encode("utf-8"))
+            video_path = _resolve_video_path(name)
+            if video_path and os.path.isfile(video_path):
+                stat = os.stat(video_path)
+                m.update(str(stat.st_size).encode("utf-8"))
+                m.update(str(stat.st_mtime_ns).encode("utf-8"))
+        return m.digest().hex()
+
+    @classmethod
+    def VALIDATE_INPUTS(
+        cls,
+        video_list: str,
+        max_videos: int,
+        mode: str,
+        index: int,
+        skip_frames: int,
+        frame_load_cap: int,
+        select_every_nth: int,
+        server_video_dir: str = "",
+    ):
+        base_names = _select_videos(video_list, max_videos, "batch", 0, server_video_dir)
+        if not base_names:
+            return "video_list is empty"
+
+        if mode == "single":
+            if index < 0:
+                return "index must be >= 0"
+            if index >= len(base_names):
+                return f"index out of range (0..{len(base_names)-1})"
+            names = [base_names[index]]
+        else:
+            names = base_names
+
+        if select_every_nth <= 0:
+            return "select_every_nth must be >= 1"
+        if skip_frames < 0:
+            return "skip_frames must be >= 0"
+        if frame_load_cap < 0:
+            return "frame_load_cap must be >= 0"
+
+        valid = any(_resolve_video_path(name) for name in names)
+        if not valid:
+            return "No valid videos in video_list"
         return True
 
 
