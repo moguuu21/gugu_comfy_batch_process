@@ -9,6 +9,38 @@ function isVideoListNode(node) {
     return !!node?.widgets?.find((w) => w.name === "video_list");
 }
 
+const MEDIA_CONFIG = {
+    image: {
+        noun: "images",
+        extSet: new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]),
+        mimePrefix: "image/",
+        accept: "image/*,.png,.jpg,.jpeg,.webp,.gif",
+    },
+    video: {
+        noun: "videos",
+        extSet: new Set([".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"]),
+        mimePrefix: "video/",
+        accept: "video/*,.mp4,.webm,.avi,.mov,.mkv,.flv,.m4v",
+    },
+};
+
+function getMediaKind(node) {
+    return isVideoListNode(node) ? "video" : "image";
+}
+
+function getMediaConfig(node) {
+    return MEDIA_CONFIG[getMediaKind(node)];
+}
+
+function isAllowedMediaFile(file, mediaConfig, { allowMime = true } = {}) {
+    if (!file) return false;
+    const lowerName = (file?.name || "").toLowerCase();
+    const hasAllowedExt = Array.from(mediaConfig.extSet).some((ext) => lowerName.endsWith(ext));
+    if (hasAllowedExt) return true;
+    if (!allowMime) return false;
+    return !!file?.type && file.type.startsWith(mediaConfig.mimePrefix);
+}
+
 function clampInt(v, min, max) {
     v = Math.floor(Number(v));
     if (Number.isNaN(v)) v = min;
@@ -211,7 +243,28 @@ async function queueCurrent(node) {
 
 async function queueAllSequential(node) {
     const names0 = parseImageList(getImageListWidget(node)?.value);
-    if (!names0 || names0.length === 0) return;
+    if (!names0 || names0.length === 0) {
+        // For server-side video scanning mode, the list widget can stay empty.
+        const serverVideoDir = String(getWidgetByName(node, "server_video_dir")?.value || "").trim();
+        if (isVideoListNode(node) && serverVideoDir) {
+            const wMode = getWidgetByName(node, "mode");
+            if (!wMode) {
+                await queueCurrent(node);
+                return;
+            }
+
+            const prevMode = wMode.value;
+            try {
+                wMode.value = "batch";
+                wMode.callback?.(wMode.value);
+                await queueCurrent(node);
+            } finally {
+                wMode.value = prevMode;
+                wMode.callback?.(wMode.value);
+            }
+        }
+        return;
+    }
 
     const maxImages = getMaxImagesValue(node);
     const names = maxImages && maxImages > 0 ? names0.slice(0, maxImages) : names0;
@@ -253,10 +306,36 @@ async function queueAllSequential(node) {
     }
 }
 
-function getViewUrl(filename) {
-    const previewParam = app.getPreviewFormatParam?.() || "";
+function getViewUrl(filename, { withPreview = true } = {}) {
+    const previewParam = withPreview ? app.getPreviewFormatParam?.() || "" : "";
     const randParam = app.getRandParam?.() || "";
     return api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=input${previewParam}${randParam}`);
+}
+
+function createVideoFallbackIcon() {
+    const icon = document.createElement("div");
+    icon.textContent = "VIDEO";
+    icon.style.cssText = "font-size:11px;opacity:0.9;letter-spacing:0.8px;";
+    return icon;
+}
+
+function createVideoThumb(name) {
+    const video = document.createElement("video");
+    video.src = getViewUrl(name, { withPreview: false });
+    video.muted = true;
+    video.loop = true;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.disablePictureInPicture = true;
+    video.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;";
+
+    video.addEventListener("error", () => {
+        const fallback = createVideoFallbackIcon();
+        video.replaceWith(fallback);
+    }, { once: true });
+
+    return video;
 }
 
 function isFilesDragEvent(e) {
@@ -361,22 +440,10 @@ async function uploadFilesSequential(node, files, { replace = false } = {}) {
 
     const existing = replace ? [] : parseImageList(w.value);
     const uploaded = [];
-    const isVideo = isVideoListNode(node);
-    const allowVideoExt = new Set([".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"]);
-    const allowImageExt = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+    const mediaConfig = getMediaConfig(node);
 
     for (const file of files) {
-        if (!file) continue;
-        const lowerName = (file?.name || "").toLowerCase();
-        if (isVideo) {
-            const hasVideoExt = Array.from(allowVideoExt).some((ext) => lowerName.endsWith(ext));
-            const isVideoMime = !!file?.type && file.type.startsWith("video/");
-            if (!hasVideoExt && !isVideoMime) continue;
-        } else {
-            const hasImageExt = Array.from(allowImageExt).some((ext) => lowerName.endsWith(ext));
-            const isImageMime = !!file?.type && file.type.startsWith("image/");
-            if (!hasImageExt && !isImageMime) continue;
-        }
+        if (!isAllowedMediaFile(file, mediaConfig, { allowMime: true })) continue;
         const name = await uploadOneImage(file);
         if (name) uploaded.push(name);
     }
@@ -387,10 +454,10 @@ async function uploadFilesSequential(node, files, { replace = false } = {}) {
 }
 
 function openMultiSelect(node, { replace = false } = {}) {
-    const isVideo = isVideoListNode(node);
+    const mediaConfig = getMediaConfig(node);
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = isVideo ? "video/*,.mp4,.webm,.avi,.mov,.mkv,.flv,.m4v" : "image/*,.png,.jpg,.jpeg,.webp,.gif";
+    input.accept = mediaConfig.accept;
     input.multiple = true;
     input.style.display = "none";
     document.body.appendChild(input);
@@ -408,10 +475,10 @@ function openMultiSelect(node, { replace = false } = {}) {
 }
 
 function openFolderSelect(node, { replace = false } = {}) {
-    const isVideo = isVideoListNode(node);
+    const mediaConfig = getMediaConfig(node);
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = isVideo ? "video/*,.mp4,.webm,.avi,.mov,.mkv,.flv,.m4v" : "image/*,.png,.jpg,.jpeg,.webp,.gif";
+    input.accept = mediaConfig.accept;
     input.multiple = true;
     input.webkitdirectory = true;
     input.directory = true;
@@ -421,16 +488,7 @@ function openFolderSelect(node, { replace = false } = {}) {
     input.onchange = async (e) => {
         try {
             let files = Array.from(e.target.files || []);
-            const allowExt = isVideo
-                ? new Set([".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"])
-                : new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
-            files = files.filter((f) => {
-                const name = (f?.name || "").toLowerCase();
-                for (const ext of allowExt) {
-                    if (name.endsWith(ext)) return true;
-                }
-                return false;
-            });
+            files = files.filter((f) => isAllowedMediaFile(f, mediaConfig, { allowMime: false }));
             // keep stable ordering
             files.sort((a, b) => (a.webkitRelativePath || a.name).localeCompare(b.webkitRelativePath || b.name));
             await uploadFilesSequential(node, files, { replace });
@@ -447,8 +505,9 @@ function createBrowserUI(node) {
     container.style.cssText =
         "width:100%;padding:8px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:6px;margin:5px 0;pointer-events:auto;";
 
-    const isVideo = isVideoListNode(node);
-    const noun = isVideo ? "videos" : "images";
+    const mediaKind = getMediaKind(node);
+    const isVideo = mediaKind === "video";
+    const noun = MEDIA_CONFIG[mediaKind].noun;
 
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
@@ -510,10 +569,7 @@ function createBrowserUI(node) {
                 img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
                 thumb.appendChild(img);
             } else {
-                const icon = document.createElement("div");
-                icon.textContent = "VIDEO";
-                icon.style.cssText = "font-size:11px;opacity:0.9;letter-spacing:0.8px;";
-                thumb.appendChild(icon);
+                thumb.appendChild(createVideoThumb(name));
             }
 
             const del = document.createElement("button");

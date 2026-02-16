@@ -12,15 +12,32 @@ import node_helpers
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
 
 
+def _parse_multiline_list(raw_text: str):
+    return [x.strip() for x in (raw_text or "").splitlines() if x.strip()]
+
+
+def _normalize_posix_path(path: str):
+    return path.replace("\\", "/")
+
+
+def _to_input_relative_or_abs(abs_path: str, input_dir: str):
+    try:
+        return _normalize_posix_path(os.path.relpath(abs_path, input_dir))
+    except ValueError:
+        # On Windows different drives cannot be relativized; keep absolute path.
+        return _normalize_posix_path(os.path.abspath(abs_path))
+
+
 def _list_videos_from_server_dir(server_video_dir: str):
     server_video_dir = (server_video_dir or "").strip()
     if not server_video_dir:
         return []
 
+    input_dir = folder_paths.get_input_directory()
     if os.path.isabs(server_video_dir):
         base_dir = server_video_dir
     else:
-        base_dir = os.path.join(folder_paths.get_input_directory(), server_video_dir)
+        base_dir = os.path.join(input_dir, server_video_dir)
 
     if not os.path.isdir(base_dir):
         return []
@@ -31,8 +48,7 @@ def _list_videos_from_server_dir(server_video_dir: str):
             ext = os.path.splitext(file_name)[1].lower()
             if ext in VIDEO_EXTENSIONS:
                 abs_path = os.path.join(root, file_name)
-                rel_path = os.path.relpath(abs_path, folder_paths.get_input_directory())
-                results.append(rel_path.replace("\\", "/"))
+                results.append(_to_input_relative_or_abs(abs_path, input_dir))
     results.sort()
     return results
 
@@ -59,8 +75,7 @@ def _resolve_video_path(name: str):
 
 
 def _select_videos(video_list: str, max_videos: int, mode: str, index: int, server_video_dir: str):
-    names = [x.strip() for x in (video_list or "").splitlines()]
-    names = [x for x in names if x]
+    names = _parse_multiline_list(video_list)
 
     if server_video_dir and server_video_dir.strip():
         names = _list_videos_from_server_dir(server_video_dir)
