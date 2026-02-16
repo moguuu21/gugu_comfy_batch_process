@@ -26,7 +26,6 @@ Maintainable ComfyUI custom nodes focused on batch media loading and VNCCS promp
 ```text
 mogu_comfy_batch_process/
 |- __init__.py                     # ComfyUI node export entry
-|- batch_load_images.py            # Compatibility exports for legacy imports
 |- core/
 |  |- list_utils.py                # List parsing, limit, single index selection
 |  |- media_paths.py               # Path resolve and recursive video scan
@@ -52,7 +51,6 @@ mogu_comfy_batch_process/
 
 - Keep node files thin: only ComfyUI I/O contract and orchestration.
 - Move reusable logic into `core/` and `services/`.
-- Preserve backward compatibility through `batch_load_images.py`.
 - Keep frontend extension code modular and easier to iterate.
 
 ## Install
