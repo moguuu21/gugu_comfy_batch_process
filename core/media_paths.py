@@ -45,10 +45,9 @@ def list_videos_from_server_dir(server_video_dir: str) -> list[str]:
 
 
 def list_video_candidates(video_list: str, max_videos: int, server_video_dir: str) -> list[str]:
-    if (server_video_dir or "").strip():
-        names = list_videos_from_server_dir(server_video_dir)
-    else:
-        names = parse_multiline_list(video_list)
+    # Task creation/execution must come from explicit video_list entries.
+    # server_video_dir is reserved for scan helpers that populate video_list.
+    names = parse_multiline_list(video_list)
     return apply_limit(names, max_videos)
 
 
