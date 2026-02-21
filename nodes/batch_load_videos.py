@@ -32,8 +32,8 @@ class GuguBatchLoadVideos:
         }
 
     CATEGORY = "gugu/utools/IO"
-    RETURN_TYPES = ("IMAGE", "FLOAT", "STRING")
-    RETURN_NAMES = ("images", "fps", "filenames")
+    RETURN_TYPES = ("IMAGE", "FLOAT", "STRING", "STRING")
+    RETURN_NAMES = ("images", "fps", "filenames", "failed_filenames")
     FUNCTION = "load_videos"
 
     def load_videos(
@@ -53,12 +53,14 @@ class GuguBatchLoadVideos:
 
         output_frames: list[torch.Tensor] = []
         output_names: list[str] = []
+        failed_names: list[str] = []
         fps_values: list[float] = []
         expected_hw: tuple[int, int] | None = None
 
         for name in names:
             video_path = resolve_video_path(name)
             if not video_path:
+                failed_names.append(name)
                 continue
 
             try:
@@ -72,12 +74,14 @@ class GuguBatchLoadVideos:
             except ImportError:
                 raise
             except Exception:
+                failed_names.append(name)
                 continue
 
             expected_hw = decode_result.expected_hw
             if decode_result.fps > 0:
                 fps_values.append(decode_result.fps)
             if not decode_result.frames:
+                failed_names.append(name)
                 continue
 
             output_frames.extend(decode_result.frames)
@@ -88,7 +92,7 @@ class GuguBatchLoadVideos:
 
         output_tensor = torch.cat(output_frames, dim=0)
         avg_fps = float(sum(fps_values) / len(fps_values)) if fps_values else 0.0
-        return (output_tensor, avg_fps, "\n".join(output_names))
+        return (output_tensor, avg_fps, "\n".join(output_names), "\n".join(failed_names))
 
     @classmethod
     def IS_CHANGED(

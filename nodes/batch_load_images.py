@@ -30,8 +30,8 @@ class BatchLoadImages:
         }
 
     CATEGORY = "gugu/utools/IO"
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("images", "filenames")
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("images", "filenames", "failed_filenames")
     FUNCTION = "load_images"
 
     def load_images(self, image_list: str, max_images: int, mode: str, index: int):
@@ -41,14 +41,17 @@ class BatchLoadImages:
 
         output_images: list[torch.Tensor] = []
         output_names: list[str] = []
+        failed_names: list[str] = []
 
         for name in names:
             if not folder_paths.exists_annotated_filepath(name):
+                failed_names.append(name)
                 continue
 
             image_path = folder_paths.get_annotated_filepath(name)
             tensor = load_image_tensor(image_path)
             if tensor is None:
+                failed_names.append(name)
                 continue
 
             output_images.append(tensor)
@@ -58,7 +61,7 @@ class BatchLoadImages:
             raise ValueError("No valid images found")
 
         output_tensor = torch.cat(output_images, dim=0)
-        return (output_tensor, "\n".join(output_names))
+        return (output_tensor, "\n".join(output_names), "\n".join(failed_names))
 
     @classmethod
     def IS_CHANGED(cls, image_list: str, max_images: int, mode: str, index: int):

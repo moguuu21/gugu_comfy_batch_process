@@ -12,7 +12,62 @@ import {
     isVideoListNode,
     parseMediaList,
     setMediaList,
+    getFailedListWidget,
+    setFailedList,
+    appendToFailedList,
+    clearFailedList,
+    requeueFailedItems,
 } from "./common.js";
+
+const SORT_OPTIONS = {
+    MANUAL: { key: "manual", label: "Manual" },
+    NAME_ASC: { key: "name", order: "asc", label: "Name (A→Z)" },
+    NAME_DESC: { key: "name", order: "desc", label: "Name (Z→A)" },
+    DATE_ASC: { key: "mtime", order: "asc", label: "Date (Old→New)" },
+    DATE_DESC: { key: "mtime", order: "desc", label: "Date (New→Old)" },
+};
+
+function naturalCompare(a, b) {
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    return collator.compare(a, b);
+}
+
+function sortMediaList(names, metadata, sortKey) {
+    const opt = SORT_OPTIONS[sortKey];
+    if (!opt || opt.key === "manual") return [...names];
+
+    const sorted = [...names];
+    sorted.sort((a, b) => {
+        let cmp;
+        if (opt.key === "name") {
+            cmp = naturalCompare(a, b);
+        } else if (opt.key === "mtime") {
+            const mtimeA = metadata[a]?.mtime || 0;
+            const mtimeB = metadata[b]?.mtime || 0;
+            cmp = mtimeA - mtimeB;
+        } else {
+            cmp = 0;
+        }
+        return opt.order === "desc" ? -cmp : cmp;
+    });
+    return sorted;
+}
+
+async function fetchMediaMetadata(filenames) {
+    if (!filenames.length) return {};
+    try {
+        const response = await api.fetchApi("/mogu_batch_process/get_media_metadata", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filenames }),
+        });
+        if (!response.ok) return {};
+        const payload = await response.json();
+        return payload?.metadata || {};
+    } catch {
+        return {};
+    }
+}
 
 async function queueCurrent() {
     const prompt = await app.graphToPrompt();
@@ -111,6 +166,18 @@ async function scanServerVideoDir(node) {
 function getViewUrl(filename, { withPreview = true } = {}) {
     const previewParam = withPreview ? app.getPreviewFormatParam?.() || "" : "";
     const randParam = app.getRandParam?.() || "";
+
+    // Handle subfolder paths (e.g., "视频/xxx.mp4" -> filename=xxx.mp4&subfolder=视频)
+    const normalized = filename.replace(/\\/g, "/");
+    const lastSlash = normalized.lastIndexOf("/");
+    if (lastSlash >= 0) {
+        const subfolder = normalized.substring(0, lastSlash);
+        const basename = normalized.substring(lastSlash + 1);
+        return api.apiURL(
+            `/view?filename=${encodeURIComponent(basename)}&type=input&subfolder=${encodeURIComponent(subfolder)}${previewParam}${randParam}`
+        );
+    }
+
     return api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=input${previewParam}${randParam}`);
 }
 
@@ -339,6 +406,31 @@ function createBrowserUI(node) {
     btnRow.appendChild(queueOneBtn);
     btnRow.appendChild(clearBtn);
 
+    // Sort row
+    const sortRow = document.createElement("div");
+    sortRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;align-items:center;";
+
+    const sortLabel = document.createElement("span");
+    sortLabel.textContent = "Sort:";
+    sortLabel.style.cssText = "font-size:12px;opacity:0.85;";
+
+    const sortSelect = document.createElement("select");
+    sortSelect.style.cssText =
+        "padding:4px 8px;background:var(--comfy-input-bg);color:var(--input-text);border:1px solid var(--border-color);border-radius:4px;font-size:12px;";
+
+    Object.entries(SORT_OPTIONS).forEach(([key, opt]) => {
+        const option = document.createElement("option");
+        option.value = key;
+        option.textContent = opt.label;
+        sortSelect.appendChild(option);
+    });
+
+    sortRow.appendChild(sortLabel);
+    sortRow.appendChild(sortSelect);
+
+    let currentSort = "MANUAL";
+    let cachedMetadata = {};
+
     const info = document.createElement("div");
     info.style.cssText = "font-size:12px;opacity:0.85;margin-bottom:6px;";
 
@@ -346,10 +438,53 @@ function createBrowserUI(node) {
     grid.style.cssText =
         "display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;max-height:260px;overflow-y:auto;background:var(--comfy-input-bg);padding:6px;border-radius:4px;";
 
+    // Failed panel
+    const failedRow = document.createElement("div");
+    failedRow.style.cssText =
+        "display:none;gap:6px;margin-top:8px;align-items:center;padding:8px;background:rgba(255,100,100,0.15);border-radius:4px;";
+
+    const failedInfo = document.createElement("span");
+    failedInfo.style.cssText = "font-size:12px;flex:1;color:#f88;";
+
+    const requeueBtn = mkBtn("Re-queue");
+    requeueBtn.style.flex = "0";
+    requeueBtn.style.padding = "6px 12px";
+
+    const clearFailedBtn = mkBtn("Clear");
+    clearFailedBtn.style.flex = "0";
+    clearFailedBtn.style.padding = "6px 12px";
+
+    failedRow.appendChild(failedInfo);
+    failedRow.appendChild(requeueBtn);
+    failedRow.appendChild(clearFailedBtn);
+
+    const updateFailedPanel = () => {
+        const failed = parseMediaList(getFailedListWidget(node)?.value);
+        if (failed.length > 0) {
+            failedRow.style.display = "flex";
+            failedInfo.textContent = `Failed: ${failed.length} item(s)`;
+        } else {
+            failedRow.style.display = "none";
+        }
+    };
+
+    requeueBtn.onclick = () => {
+        requeueFailedItems(node);
+        redraw();
+        updateFailedPanel();
+    };
+
+    clearFailedBtn.onclick = () => {
+        clearFailedList(node);
+        updateFailedPanel();
+    };
+
     const updateInfo = () => {
         const names = parseMediaList(getMediaListWidget(node)?.value);
-        info.textContent = `Selected ${names.length} ${noun}. Drag-and-drop is supported.`;
+        info.textContent = `Selected ${names.length} ${noun}. Drag to reorder.`;
     };
+
+    let dragFromIdx = null;
 
     const redraw = () => {
         const names = parseMediaList(getMediaListWidget(node)?.value);
@@ -359,6 +494,44 @@ function createBrowserUI(node) {
         names.forEach((name, idx) => {
             const cell = document.createElement("div");
             cell.style.cssText = "display:flex;flex-direction:column;gap:3px;";
+            cell.draggable = true;
+            cell.dataset.index = idx;
+
+            cell.ondragstart = (e) => {
+                dragFromIdx = idx;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", String(idx));
+                cell.style.opacity = "0.5";
+            };
+
+            cell.ondragend = () => {
+                cell.style.opacity = "1";
+                dragFromIdx = null;
+            };
+
+            cell.ondragover = (e) => {
+                if (dragFromIdx === null) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+            };
+
+            cell.ondrop = (e) => {
+                if (dragFromIdx === null) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const fromIdx = dragFromIdx;
+                const toIdx = idx;
+                if (fromIdx !== toIdx) {
+                    const currentNames = parseMediaList(getMediaListWidget(node)?.value);
+                    const [moved] = currentNames.splice(fromIdx, 1);
+                    currentNames.splice(toIdx, 0, moved);
+                    setMediaList(node, currentNames);
+                    currentSort = "MANUAL";
+                    sortSelect.value = "MANUAL";
+                    redraw();
+                }
+                dragFromIdx = null;
+            };
 
             const thumb = document.createElement("div");
             thumb.style.cssText =
@@ -368,9 +541,12 @@ function createBrowserUI(node) {
                 const img = document.createElement("img");
                 img.src = getViewUrl(name);
                 img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
+                img.draggable = false;
                 thumb.appendChild(img);
             } else {
-                thumb.appendChild(createVideoThumb(name));
+                const videoThumb = createVideoThumb(name);
+                videoThumb.draggable = false;
+                thumb.appendChild(videoThumb);
             }
 
             const del = document.createElement("button");
@@ -398,7 +574,26 @@ function createBrowserUI(node) {
 
         grid.appendChild(fragment);
         updateInfo();
+        updateFailedPanel();
         app.graph.setDirtyCanvas(true);
+    };
+
+    const applySortAndRedraw = async () => {
+        const names = parseMediaList(getMediaListWidget(node)?.value);
+        if (!names.length) return;
+
+        if (SORT_OPTIONS[currentSort]?.key === "mtime" && Object.keys(cachedMetadata).length === 0) {
+            cachedMetadata = await fetchMediaMetadata(names);
+        }
+
+        const sorted = sortMediaList(names, cachedMetadata, currentSort);
+        setMediaList(node, sorted);
+        redraw();
+    };
+
+    sortSelect.onchange = async () => {
+        currentSort = sortSelect.value;
+        await applySortAndRedraw();
     };
 
     container.addEventListener("dragover", (event) => {
@@ -451,10 +646,12 @@ function createBrowserUI(node) {
     };
 
     container.appendChild(btnRow);
+    container.appendChild(sortRow);
     container.appendChild(info);
     container.appendChild(grid);
+    container.appendChild(failedRow);
 
-    return { container, redraw, setDragging };
+    return { container, redraw, setDragging, updateFailedPanel };
 }
 
 export function registerBatchLoadMediaExtension() {
@@ -530,7 +727,20 @@ export function registerBatchLoadMediaExtension() {
             const origOnExecuted = nodeType.prototype.onExecuted;
             nodeType.prototype.onExecuted = function (output) {
                 origOnExecuted?.apply(this, arguments);
+
+                // Capture failed_filenames from node output
+                const failedOutput = output?.failed_filenames;
+                if (failedOutput) {
+                    const failedNames = parseMediaList(
+                        Array.isArray(failedOutput) ? failedOutput[0] : failedOutput
+                    );
+                    if (failedNames.length > 0) {
+                        appendToFailedList(this, failedNames);
+                    }
+                }
+
                 this._batchLoadImagesUI?.redraw?.();
+                this._batchLoadImagesUI?.updateFailedPanel?.();
             };
         },
     });

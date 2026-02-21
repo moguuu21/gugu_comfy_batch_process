@@ -77,3 +77,41 @@ export function clampInt(value, min, max) {
 export function getCameraDataWidget(node) {
     return getWidgetByName(node, "camera_data");
 }
+
+export function getFailedListWidget(node) {
+    return getWidgetByName(node, "_failed_list");
+}
+
+export function getOrCreateFailedListWidget(node) {
+    let widget = getFailedListWidget(node);
+    if (!widget) {
+        widget = node.addWidget("text", "_failed_list", "", () => {});
+        widget.type = "hidden";
+        widget.computeSize = () => [0, -4];
+    }
+    return widget;
+}
+
+export function setFailedList(node, names) {
+    const widget = getOrCreateFailedListWidget(node);
+    widget.value = (names || []).join("\n");
+}
+
+export function appendToFailedList(node, names) {
+    const existing = parseMediaList(getFailedListWidget(node)?.value);
+    const unique = [...new Set([...existing, ...names])];
+    setFailedList(node, unique);
+}
+
+export function clearFailedList(node) {
+    setFailedList(node, []);
+}
+
+export function requeueFailedItems(node) {
+    const failed = parseMediaList(getFailedListWidget(node)?.value);
+    if (!failed.length) return;
+    const current = parseMediaList(getMediaListWidget(node)?.value);
+    const merged = [...new Set([...current, ...failed])];
+    setMediaList(node, merged);
+    clearFailedList(node);
+}
