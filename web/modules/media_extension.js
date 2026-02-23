@@ -112,7 +112,80 @@ function mkBtn(label) {
     return button;
 }
 
+function ensureGridScrollbarStyles() {
+    const styleId = "mogu-batch-media-grid-scrollbar-style";
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+.mogu-batch-media-grid {
+    scrollbar-width: auto !important;
+    scrollbar-color: rgba(140, 190, 220, 0.95) rgba(0, 0, 0, 0.25) !important;
+}
+.mogu-batch-media-grid::-webkit-scrollbar {
+    width: 12px !important;
+}
+.mogu-batch-media-grid::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.25) !important;
+    border-radius: 8px !important;
+}
+.mogu-batch-media-grid::-webkit-scrollbar-thumb {
+    background: rgba(140, 190, 220, 0.95) !important;
+    border-radius: 8px !important;
+    border: 2px solid rgba(0, 0, 0, 0.2) !important;
+}
+.mogu-batch-media-grid::-webkit-scrollbar-thumb:hover {
+    background: rgba(170, 220, 245, 1) !important;
+}
+`;
+
+    (document.head || document.documentElement).appendChild(style);
+}
+
+function bindScrollableWheel(element) {
+    if (!element) return;
+    const PIXELS_PER_LINE = 16;
+    const wheelCtor = typeof WheelEvent === "function" ? WheelEvent : null;
+    const DOM_DELTA_LINE = wheelCtor ? wheelCtor.DOM_DELTA_LINE : 1;
+    const DOM_DELTA_PAGE = wheelCtor ? wheelCtor.DOM_DELTA_PAGE : 2;
+
+    const getDeltaY = (event) => {
+        if (!Number.isFinite(event.deltaY)) return 0;
+        if (event.deltaMode === DOM_DELTA_LINE) return event.deltaY * PIXELS_PER_LINE;
+        if (event.deltaMode === DOM_DELTA_PAGE) return event.deltaY * element.clientHeight;
+        return event.deltaY;
+    };
+
+    const onWheelCapture = (event) => {
+        const target = event?.target;
+        if (!(target instanceof Node) || !element.contains(target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") {
+            event.stopImmediatePropagation();
+        }
+
+        const deltaY = getDeltaY(event);
+        if (!deltaY) return;
+
+        const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+        if (maxScrollTop <= 0) return;
+
+        const nextTop = Math.max(0, Math.min(maxScrollTop, element.scrollTop + deltaY));
+        element.scrollTop = nextTop;
+    };
+
+    window.addEventListener("wheel", onWheelCapture, { passive: false, capture: true });
+
+    return () => {
+        window.removeEventListener("wheel", onWheelCapture, { capture: true });
+    };
+}
+
 function createBrowserUI(node) {
+    ensureGridScrollbarStyles();
+
     const container = document.createElement("div");
     container.style.cssText =
         "width:100%;padding:8px;background:var(--comfy-menu-bg);border:1px solid var(--border-color);border-radius:6px;margin:5px 0;pointer-events:auto;";
@@ -166,8 +239,11 @@ function createBrowserUI(node) {
     info.style.cssText = "font-size:12px;opacity:0.85;margin-bottom:6px;";
 
     const grid = document.createElement("div");
+    grid.className = "mogu-batch-media-grid";
     grid.style.cssText =
-        "display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;max-height:260px;overflow-y:auto;background:var(--comfy-input-bg);padding:6px;border-radius:4px;";
+        "display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;height:260px;overflow-y:scroll;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable;touch-action:pan-y;background:var(--comfy-input-bg);padding:6px;border-radius:4px;";
+    const unbindGridWheel = bindScrollableWheel(grid);
+    grid.tabIndex = 0;
 
     const updateInfo = () => {
         const names = parseMediaList(getMediaListWidget(node)?.value);
@@ -329,7 +405,15 @@ function createBrowserUI(node) {
         cachedPreviews = previews && typeof previews === "object" ? previews : {};
     };
 
-    return { container, redraw, setDragging, setPreviews };
+    return {
+        container,
+        redraw,
+        setDragging,
+        setPreviews,
+        dispose: () => {
+            unbindGridWheel?.();
+        },
+    };
 }
 
 export function registerBatchLoadMediaExtension() {
@@ -385,6 +469,7 @@ export function registerBatchLoadMediaExtension() {
 
                 const prevOnRemoved = this.onRemoved;
                 this.onRemoved = function () {
+                    ui.dispose?.();
                     dragDropCoordinator.unregister();
                     if (this._batchLoadImagesDragDropCoordinator === dragDropCoordinator) {
                         this._batchLoadImagesDragDropCoordinator = null;
