@@ -1,7 +1,11 @@
 from .hash_utils import new_sha256, update_hash_with_file_content, update_hash_with_file_stat, update_hash_with_value
 from .list_utils import apply_limit, clamp_single_index, parse_multiline_list, pick_mode_items, select_from_multiline
 from .media_paths import (
+    InputViewParams,
+    ScannedVideoEntry,
     VIDEO_EXTENSIONS,
+    build_input_view_params,
+    is_previewable_path,
     list_video_candidates,
     list_videos_from_server_dir,
     normalize_posix_path,
@@ -12,8 +16,12 @@ from .media_paths import (
 
 __all__ = [
     "VIDEO_EXTENSIONS",
+    "InputViewParams",
+    "ScannedVideoEntry",
     "apply_limit",
+    "build_input_view_params",
     "clamp_single_index",
+    "is_previewable_path",
     "list_video_candidates",
     "list_videos_from_server_dir",
     "new_sha256",

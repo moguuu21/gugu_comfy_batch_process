@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 import folder_paths
 
@@ -9,19 +10,76 @@ from .list_utils import apply_limit, parse_multiline_list, pick_mode_items
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
 
 
+@dataclass(frozen=True)
+class InputViewParams:
+    filename: str
+    subfolder: str = ""
+
+
+@dataclass(frozen=True)
+class ScannedVideoEntry:
+    path: str
+    preview: InputViewParams | None
+
+
 def normalize_posix_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def to_input_relative_or_abs(abs_path: str, input_dir: str) -> str:
+def _is_abs_like(path: str) -> bool:
+    normalized = normalize_posix_path(path)
+    return normalized.startswith("/") or (len(normalized) >= 2 and normalized[1] == ":")
+
+
+def _is_within_dir(path: str, base_dir: str) -> bool:
+    abs_path = os.path.abspath(path)
+    abs_base = os.path.abspath(base_dir)
     try:
-        return normalize_posix_path(os.path.relpath(abs_path, input_dir))
+        return os.path.commonpath((abs_path, abs_base)) == abs_base
     except ValueError:
-        # Different drive letters on Windows cannot be relativized.
-        return normalize_posix_path(os.path.abspath(abs_path))
+        # Different drive letters on Windows.
+        return False
 
 
-def list_videos_from_server_dir(server_video_dir: str) -> list[str]:
+def to_input_relative_or_abs(abs_path: str, input_dir: str) -> str:
+    abs_path = os.path.abspath(abs_path)
+    input_dir = os.path.abspath(input_dir)
+    if _is_within_dir(abs_path, input_dir):
+        rel_path = os.path.relpath(abs_path, input_dir)
+        return normalize_posix_path(rel_path)
+    return normalize_posix_path(abs_path)
+
+
+def build_input_view_params(path: str, input_dir: str | None = None) -> InputViewParams | None:
+    clean_path = (path or "").strip()
+    if not clean_path:
+        return None
+
+    normalized = normalize_posix_path(clean_path)
+    if normalized.startswith("..") or "/.." in normalized:
+        return None
+
+    input_dir = os.path.abspath(input_dir or folder_paths.get_input_directory())
+    if _is_abs_like(normalized):
+        abs_path = os.path.abspath(clean_path)
+        if not _is_within_dir(abs_path, input_dir):
+            return None
+        normalized = normalize_posix_path(os.path.relpath(abs_path, input_dir))
+
+    parts = [segment for segment in normalized.split("/") if segment]
+    if not parts:
+        return None
+
+    filename = parts[-1]
+    subfolder = "/".join(parts[:-1])
+    return InputViewParams(filename=filename, subfolder=subfolder)
+
+
+def is_previewable_path(path: str) -> bool:
+    return build_input_view_params(path) is not None
+
+
+def list_videos_from_server_dir(server_video_dir: str) -> list[ScannedVideoEntry]:
     server_video_dir = (server_video_dir or "").strip()
     if not server_video_dir:
         return []
@@ -31,16 +89,18 @@ def list_videos_from_server_dir(server_video_dir: str) -> list[str]:
     if not os.path.isdir(base_dir):
         return []
 
-    results: list[str] = []
+    results: list[ScannedVideoEntry] = []
     for root, _, files in os.walk(base_dir):
         for file_name in files:
             ext = os.path.splitext(file_name)[1].lower()
             if ext not in VIDEO_EXTENSIONS:
                 continue
             abs_path = os.path.join(root, file_name)
-            results.append(to_input_relative_or_abs(abs_path, input_dir))
+            resolved_path = to_input_relative_or_abs(abs_path, input_dir)
+            preview = build_input_view_params(resolved_path, input_dir=input_dir)
+            results.append(ScannedVideoEntry(path=resolved_path, preview=preview))
 
-    results.sort()
+    results.sort(key=lambda entry: entry.path)
     return results
 
 

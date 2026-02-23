@@ -7,7 +7,8 @@ from server import PromptServer
 
 import folder_paths
 
-from .core import list_videos_from_server_dir, resolve_video_path
+from .core import resolve_video_path
+from .services import build_video_scan_payload, resolve_preview_file
 
 
 def _parse_non_negative_int(value: object, default: int = 0) -> int:
@@ -34,16 +35,26 @@ async def scan_video_dir(request):
 
     max_videos = _parse_non_negative_int(payload.get("max_videos", 0))
 
-    all_items = list_videos_from_server_dir(server_video_dir)
-    items = all_items[:max_videos] if max_videos > 0 else all_items
+    return web.json_response(build_video_scan_payload(server_video_dir, max_videos))
 
-    return web.json_response(
-        {
-            "ok": True,
-            "items": items,
-            "count": len(items),
-            "total": len(all_items),
-        }
+
+@PromptServer.instance.routes.get("/mogu_batch_process/view_proxy")
+async def view_proxy(request):
+    preview_id = str(request.rel_url.query.get("id") or "").strip()
+    if not preview_id:
+        return web.Response(status=400)
+
+    file_path = resolve_preview_file(preview_id)
+    if not file_path:
+        return web.Response(status=404)
+
+    return web.FileResponse(
+        file_path,
+        headers={
+            # Small private cache window to reduce repeated reads while browsing.
+            "Cache-Control": "private, max-age=300",
+            "Accept-Ranges": "bytes",
+        },
     )
 
 
@@ -59,7 +70,6 @@ async def get_media_metadata(request):
         filenames = []
 
     metadata = {}
-    input_dir = folder_paths.get_input_directory()
 
     for name in filenames:
         if not isinstance(name, str) or not name:

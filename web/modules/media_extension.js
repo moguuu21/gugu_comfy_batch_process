@@ -13,11 +13,11 @@ import {
     parseMediaList,
     setMediaList,
     getFailedListWidget,
-    setFailedList,
     appendToFailedList,
     clearFailedList,
     requeueFailedItems,
 } from "./common.js";
+import { createVideoThumb, getInputViewUrl } from "./media_preview.js";
 
 const SORT_OPTIONS = {
     MANUAL: { key: "manual", label: "Manual" },
@@ -123,7 +123,7 @@ async function queueAllSequential(node) {
 }
 
 async function scanServerVideoDir(node) {
-    if (!isVideoListNode(node)) return { items: [], count: 0, total: 0 };
+    if (!isVideoListNode(node)) return { items: [], previews: {}, count: 0, total: 0 };
 
     const serverVideoDir = String(getWidgetByName(node, "server_video_dir")?.value || "").trim();
     if (!serverVideoDir) {
@@ -155,59 +155,14 @@ async function scanServerVideoDir(node) {
     }
 
     const items = Array.isArray(payload?.items) ? payload.items : [];
+    const previews = payload?.previews && typeof payload.previews === "object" ? payload.previews : {};
     setMediaList(node, items);
     return {
         items,
+        previews,
         count: typeof payload?.count === "number" ? payload.count : items.length,
         total: typeof payload?.total === "number" ? payload.total : items.length,
     };
-}
-
-function getViewUrl(filename, { withPreview = true } = {}) {
-    const previewParam = withPreview ? app.getPreviewFormatParam?.() || "" : "";
-    const randParam = app.getRandParam?.() || "";
-
-    // Handle subfolder paths (e.g., "视频/xxx.mp4" -> filename=xxx.mp4&subfolder=视频)
-    const normalized = filename.replace(/\\/g, "/");
-    const lastSlash = normalized.lastIndexOf("/");
-    if (lastSlash >= 0) {
-        const subfolder = normalized.substring(0, lastSlash);
-        const basename = normalized.substring(lastSlash + 1);
-        return api.apiURL(
-            `/view?filename=${encodeURIComponent(basename)}&type=input&subfolder=${encodeURIComponent(subfolder)}${previewParam}${randParam}`
-        );
-    }
-
-    return api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=input${previewParam}${randParam}`);
-}
-
-function createVideoFallbackIcon() {
-    const icon = document.createElement("div");
-    icon.textContent = "VIDEO";
-    icon.style.cssText = "font-size:11px;opacity:0.9;letter-spacing:0.8px;";
-    return icon;
-}
-
-function createVideoThumb(name) {
-    const video = document.createElement("video");
-    video.src = getViewUrl(name, { withPreview: false });
-    video.muted = true;
-    video.loop = true;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.preload = "metadata";
-    video.disablePictureInPicture = true;
-    video.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;";
-
-    video.addEventListener(
-        "error",
-        () => {
-            video.replaceWith(createVideoFallbackIcon());
-        },
-        { once: true }
-    );
-
-    return video;
 }
 
 function isFilesDragEvent(event) {
@@ -430,6 +385,7 @@ function createBrowserUI(node) {
 
     let currentSort = "MANUAL";
     let cachedMetadata = {};
+    let cachedPreviews = {};
 
     const info = document.createElement("div");
     info.style.cssText = "font-size:12px;opacity:0.85;margin-bottom:6px;";
@@ -539,12 +495,13 @@ function createBrowserUI(node) {
 
             if (!isVideo) {
                 const img = document.createElement("img");
-                img.src = getViewUrl(name);
+                img.src = getInputViewUrl(name);
                 img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
                 img.draggable = false;
                 thumb.appendChild(img);
             } else {
-                const videoThumb = createVideoThumb(name);
+                const previewHint = name in cachedPreviews ? cachedPreviews[name] : undefined;
+                const videoThumb = createVideoThumb(name, previewHint);
                 videoThumb.draggable = false;
                 thumb.appendChild(videoThumb);
             }
@@ -651,7 +608,11 @@ function createBrowserUI(node) {
     container.appendChild(grid);
     container.appendChild(failedRow);
 
-    return { container, redraw, setDragging, updateFailedPanel };
+    const setPreviews = (previews) => {
+        cachedPreviews = previews && typeof previews === "object" ? previews : {};
+    };
+
+    return { container, redraw, setDragging, updateFailedPanel, setPreviews };
 }
 
 export function registerBatchLoadMediaExtension() {
@@ -686,7 +647,8 @@ export function registerBatchLoadMediaExtension() {
                     if (!getWidgetByName(this, scanWidgetName)) {
                         this.addWidget("button", scanWidgetName, null, async () => {
                             try {
-                                await scanServerVideoDir(this);
+                                const result = await scanServerVideoDir(this);
+                                ui.setPreviews(result.previews);
                                 ui.redraw();
                             } catch (error) {
                                 console.error("[BatchLoadVideos] Failed to scan server_video_dir:", error);

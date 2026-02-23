@@ -28,10 +28,12 @@ mogu_comfy_batch_process/
 |- __init__.py                     # ComfyUI node export entry
 |- core/
 |  |- list_utils.py                # List parsing, limit, single index selection
-|  |- media_paths.py               # Path resolve and recursive video scan
+|  |- media_paths.py               # Path resolve, scan entry model, preview params
 |  |- hash_utils.py                # Shared hash helpers for IS_CHANGED
 |- services/
 |  |- image_service.py             # Image decode to Tensor
+|  |- media_scan_service.py        # Scan payload assembly for API route
+|  |- preview_proxy_service.py     # Secure preview token registry + file resolve
 |  |- video_service.py             # Video decode to frame tensors
 |  |- vnccs_service.py             # VNCCS prompt generation
 |- nodes/
@@ -44,6 +46,7 @@ mogu_comfy_batch_process/
 |  |- modules/
 |     |- common.js                 # Shared frontend utils
 |     |- media_extension.js        # Media browser extension
+|     |- media_preview.js          # Input preview/url helpers for images/videos
 |     |- vnccs_extension.js        # VNCCS visual extension
 ```
 
