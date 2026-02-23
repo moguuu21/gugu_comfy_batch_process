@@ -15,6 +15,16 @@ import { isFilesDragEvent, uploadFilesSequential, openMultiSelect, openFolderSel
 import { queueAllSequential, queueCurrentSingle, scanServerVideoDir } from "./media_queue.js";
 import { createFailedPanel } from "./media_failed.js";
 
+const SCROLLABLE_GRID_SELECTOR = ".mogu-batch-media-grid";
+const scrollableWheelElements = new Set();
+
+const PIXELS_PER_LINE = 16;
+const wheelCtor = typeof WheelEvent === "function" ? WheelEvent : null;
+const DOM_DELTA_LINE = wheelCtor ? wheelCtor.DOM_DELTA_LINE : 1;
+const DOM_DELTA_PAGE = wheelCtor ? wheelCtor.DOM_DELTA_PAGE : 2;
+
+let isGlobalWheelCaptureBound = false;
+
 function isPointInRect(x, y, rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
@@ -30,6 +40,62 @@ function runWithUiError(label, action, { logPrefix = "BatchLoadImages" } = {}) {
             console.error(`[${logPrefix}] ${label}:`, error);
             alert(`${label}: ${formatErrorMessage(error)}`);
         });
+}
+
+function normalizeWheelDeltaY(event, element) {
+    if (!Number.isFinite(event?.deltaY)) return 0;
+    if (event.deltaMode === DOM_DELTA_LINE) return event.deltaY * PIXELS_PER_LINE;
+    if (event.deltaMode === DOM_DELTA_PAGE) return event.deltaY * element.clientHeight;
+    return event.deltaY;
+}
+
+function resolveScrollableGridFromEvent(event) {
+    const target = event?.target;
+    const baseElement =
+        target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+    if (!baseElement?.closest) return null;
+
+    const matched = baseElement.closest(SCROLLABLE_GRID_SELECTOR);
+    if (!(matched instanceof HTMLElement)) return null;
+    if (!scrollableWheelElements.has(matched)) return null;
+    return matched;
+}
+
+function unbindGlobalWheelCaptureIfIdle() {
+    if (!isGlobalWheelCaptureBound || scrollableWheelElements.size > 0) return;
+    window.removeEventListener("wheel", onGlobalWheelCapture, { capture: true });
+    isGlobalWheelCaptureBound = false;
+}
+
+function onGlobalWheelCapture(event) {
+    const element = resolveScrollableGridFromEvent(event);
+    if (!element) return;
+    if (!element.isConnected) {
+        scrollableWheelElements.delete(element);
+        unbindGlobalWheelCaptureIfIdle();
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+    }
+
+    const deltaY = normalizeWheelDeltaY(event, element);
+    if (!deltaY) return;
+
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    if (maxScrollTop <= 0) return;
+
+    const nextTop = Math.max(0, Math.min(maxScrollTop, element.scrollTop + deltaY));
+    element.scrollTop = nextTop;
+}
+
+function bindGlobalWheelCapture() {
+    if (isGlobalWheelCaptureBound) return;
+    window.addEventListener("wheel", onGlobalWheelCapture, { passive: false, capture: true });
+    isGlobalWheelCaptureBound = true;
 }
 
 function createDragDropCoordinator({ node, container, redraw, setDragging }) {
@@ -144,42 +210,13 @@ function ensureGridScrollbarStyles() {
 }
 
 function bindScrollableWheel(element) {
-    if (!element) return;
-    const PIXELS_PER_LINE = 16;
-    const wheelCtor = typeof WheelEvent === "function" ? WheelEvent : null;
-    const DOM_DELTA_LINE = wheelCtor ? wheelCtor.DOM_DELTA_LINE : 1;
-    const DOM_DELTA_PAGE = wheelCtor ? wheelCtor.DOM_DELTA_PAGE : 2;
-
-    const getDeltaY = (event) => {
-        if (!Number.isFinite(event.deltaY)) return 0;
-        if (event.deltaMode === DOM_DELTA_LINE) return event.deltaY * PIXELS_PER_LINE;
-        if (event.deltaMode === DOM_DELTA_PAGE) return event.deltaY * element.clientHeight;
-        return event.deltaY;
-    };
-
-    const onWheelCapture = (event) => {
-        const target = event?.target;
-        if (!(target instanceof Node) || !element.contains(target)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof event.stopImmediatePropagation === "function") {
-            event.stopImmediatePropagation();
-        }
-
-        const deltaY = getDeltaY(event);
-        if (!deltaY) return;
-
-        const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
-        if (maxScrollTop <= 0) return;
-
-        const nextTop = Math.max(0, Math.min(maxScrollTop, element.scrollTop + deltaY));
-        element.scrollTop = nextTop;
-    };
-
-    window.addEventListener("wheel", onWheelCapture, { passive: false, capture: true });
+    if (!element) return () => {};
+    scrollableWheelElements.add(element);
+    bindGlobalWheelCapture();
 
     return () => {
-        window.removeEventListener("wheel", onWheelCapture, { capture: true });
+        scrollableWheelElements.delete(element);
+        unbindGlobalWheelCaptureIfIdle();
     };
 }
 
