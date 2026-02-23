@@ -51,9 +51,12 @@ export function parseMediaList(text) {
 
 export function setMediaList(node, names) {
     const widget = getMediaListWidget(node);
-    if (!widget) return;
-    widget.value = (names || []).join("\n");
+    if (!widget) return false;
+    const nextValue = (names || []).join("\n");
+    if (widget.value === nextValue) return false;
+    widget.value = nextValue;
     widget.callback?.(widget.value);
+    return true;
 }
 
 export function getMaxMediaCountValue(node) {

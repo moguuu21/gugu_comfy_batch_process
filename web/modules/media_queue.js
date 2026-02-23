@@ -7,7 +7,6 @@ import {
     getWidgetByName,
     isVideoListNode,
     parseMediaList,
-    setMediaList,
 } from "./common.js";
 
 async function queueCurrent() {
@@ -83,6 +82,9 @@ export async function scanServerVideoDir(node) {
     if (!serverVideoDir) {
         throw new Error("server_video_dir is empty");
     }
+    if (/[\u0000\r\n]/.test(serverVideoDir)) {
+        throw new Error("server_video_dir contains invalid control characters");
+    }
 
     const maxVideos = getMaxMediaCountValue(node);
     const response = await api.fetchApi("/mogu_batch_process/scan_video_dir", {
@@ -110,7 +112,6 @@ export async function scanServerVideoDir(node) {
 
     const items = Array.isArray(payload?.items) ? payload.items : [];
     const previews = payload?.previews && typeof payload.previews === "object" ? payload.previews : {};
-    setMediaList(node, items);
     return {
         items,
         previews,

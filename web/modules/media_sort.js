@@ -2,15 +2,16 @@ import { api } from "../../../../scripts/api.js";
 
 export const SORT_OPTIONS = {
     MANUAL: { key: "manual", label: "Manual" },
-    NAME_ASC: { key: "name", order: "asc", label: "Name (A→Z)" },
-    NAME_DESC: { key: "name", order: "desc", label: "Name (Z→A)" },
-    DATE_ASC: { key: "mtime", order: "asc", label: "Date (Old→New)" },
-    DATE_DESC: { key: "mtime", order: "desc", label: "Date (New→Old)" },
+    NAME_ASC: { key: "name", order: "asc", label: "Name (A->Z)" },
+    NAME_DESC: { key: "name", order: "desc", label: "Name (Z->A)" },
+    DATE_ASC: { key: "mtime", order: "asc", label: "Date (Old->New)" },
+    DATE_DESC: { key: "mtime", order: "desc", label: "Date (New->Old)" },
 };
 
+const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 function naturalCompare(a, b) {
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-    return collator.compare(a, b);
+    return naturalCollator.compare(a, b);
 }
 
 export function sortMediaList(names, metadata, sortKey) {

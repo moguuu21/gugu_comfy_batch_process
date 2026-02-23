@@ -19,6 +19,19 @@ function isPointInRect(x, y, rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
+function formatErrorMessage(error) {
+    return error?.message || String(error);
+}
+
+function runWithUiError(label, action, { logPrefix = "BatchLoadImages" } = {}) {
+    void Promise.resolve()
+        .then(action)
+        .catch((error) => {
+            console.error(`[${logPrefix}] ${label}:`, error);
+            alert(`${label}: ${formatErrorMessage(error)}`);
+        });
+}
+
 function createDragDropCoordinator({ node, container, redraw, setDragging }) {
     let isUnregistered = false;
     let isDragging = false;
@@ -69,8 +82,13 @@ function createDragDropCoordinator({ node, container, redraw, setDragging }) {
         if (!hit) return;
         const files = Array.from(event.dataTransfer?.files || []);
         if (!files.length) return;
-        await uploadFilesSequential(node, files, { replace: false });
-        redraw?.();
+        try {
+            await uploadFilesSequential(node, files, { replace: false });
+        } catch (error) {
+            console.error("[BatchLoadImages] Drag-and-drop upload failed:", error);
+            alert(`Upload failed: ${formatErrorMessage(error)}`);
+            redraw?.();
+        }
     };
 
     const onWindowDragLeave = (event) => {
@@ -105,6 +123,7 @@ function createBrowserUI(node) {
 
     let currentSort = "MANUAL";
     let cachedMetadata = {};
+    let metadataCacheSignature = "";
     let cachedPreviews = {};
 
     const btnRow = document.createElement("div");
@@ -199,7 +218,6 @@ function createBrowserUI(node) {
                     setMediaList(node, currentNames);
                     currentSort = "MANUAL";
                     sortSelect.value = "MANUAL";
-                    redraw();
                 }
                 dragFromIdx = null;
             };
@@ -232,7 +250,6 @@ function createBrowserUI(node) {
                 event.preventDefault();
                 event.stopPropagation();
                 setMediaList(node, names.slice(0, idx).concat(names.slice(idx + 1)));
-                redraw();
             };
 
             const label = document.createElement("div");
@@ -257,18 +274,28 @@ function createBrowserUI(node) {
         const names = parseMediaList(getMediaListWidget(node)?.value);
         if (!names.length) return;
 
-        if (SORT_OPTIONS[currentSort]?.key === "mtime" && Object.keys(cachedMetadata).length === 0) {
-            cachedMetadata = await fetchMediaMetadata(names);
+        if (SORT_OPTIONS[currentSort]?.key === "mtime") {
+            const signature = [...new Set(names)].sort().join("\n");
+            if (signature !== metadataCacheSignature) {
+                cachedMetadata = {};
+                metadataCacheSignature = signature;
+            }
+            const missingNames = names.filter((name) => !(name in cachedMetadata));
+            if (missingNames.length > 0) {
+                const fetchedMetadata = await fetchMediaMetadata(missingNames);
+                cachedMetadata = { ...cachedMetadata, ...fetchedMetadata };
+            }
         }
 
         const sorted = sortMediaList(names, cachedMetadata, currentSort);
         setMediaList(node, sorted);
-        redraw();
     };
 
-    sortSelect.onchange = async () => {
-        currentSort = sortSelect.value;
-        await applySortAndRedraw();
+    sortSelect.onchange = () => {
+        runWithUiError("Sort failed", async () => {
+            currentSort = sortSelect.value;
+            await applySortAndRedraw();
+        });
     };
 
     container.addEventListener("dragover", (event) => {
@@ -287,14 +314,13 @@ function createBrowserUI(node) {
         container.style.border = active ? "2px dashed #4a6" : "1px solid var(--border-color)";
     };
 
-    replaceBtn.onclick = () => openMultiSelect(node, { replace: true });
-    addBtn.onclick = () => openMultiSelect(node, { replace: false });
-    folderBtn.onclick = () => openFolderSelect(node, { replace: true });
-    queueBtn.onclick = () => queueAllSequential(node);
-    queueOneBtn.onclick = () => queueCurrentSingle(node);
+    replaceBtn.onclick = () => runWithUiError("Select failed", () => openMultiSelect(node, { replace: true }));
+    addBtn.onclick = () => runWithUiError("Add failed", () => openMultiSelect(node, { replace: false }));
+    folderBtn.onclick = () => runWithUiError("Folder select failed", () => openFolderSelect(node, { replace: true }));
+    queueBtn.onclick = () => runWithUiError("Queue all failed", () => queueAllSequential(node));
+    queueOneBtn.onclick = () => runWithUiError("Queue current failed", () => queueCurrentSingle(node));
     clearBtn.onclick = () => {
         setMediaList(node, []);
-        redraw();
     };
 
     container.append(btnRow, sortRow, info, grid, failedPanel.element);
@@ -303,7 +329,7 @@ function createBrowserUI(node) {
         cachedPreviews = previews && typeof previews === "object" ? previews : {};
     };
 
-    return { container, redraw, setDragging, updateFailedPanel: failedPanel.update, setPreviews };
+    return { container, redraw, setDragging, setPreviews };
 }
 
 export function registerBatchLoadMediaExtension() {
@@ -334,15 +360,13 @@ export function registerBatchLoadMediaExtension() {
                 if (isVideoListNode(this)) {
                     const scanWidgetName = "Scan";
                     if (!getWidgetByName(this, scanWidgetName)) {
-                        this.addWidget("button", scanWidgetName, null, async () => {
-                            try {
+                        this.addWidget("button", scanWidgetName, null, () => {
+                            runWithUiError("Scan failed", async () => {
                                 const result = await scanServerVideoDir(this);
                                 ui.setPreviews(result.previews);
-                                ui.redraw();
-                            } catch (error) {
-                                console.error("[BatchLoadVideos] Failed to scan server_video_dir:", error);
-                                alert(`Scan failed: ${error?.message || String(error)}`);
-                            }
+                                const changed = setMediaList(this, result.items);
+                                if (!changed) ui.redraw();
+                            });
                         });
                     }
                 }
@@ -395,7 +419,6 @@ export function registerBatchLoadMediaExtension() {
                 }
 
                 this._batchLoadImagesUI?.redraw?.();
-                this._batchLoadImagesUI?.updateFailedPanel?.();
             };
         },
     });

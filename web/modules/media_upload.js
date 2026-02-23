@@ -18,7 +18,8 @@ async function uploadOneMedia(file) {
         body,
     });
     if (!response.ok) {
-        throw new Error(await response.text());
+        const detail = (await response.text()).trim();
+        throw new Error(detail || `Upload failed (${response.status})`);
     }
 
     const json = await response.json();
@@ -43,49 +44,67 @@ export async function uploadFilesSequential(node, files, { replace = false } = {
     return uploaded;
 }
 
-export function openMultiSelect(node, { replace = false } = {}) {
-    const mediaConfig = getMediaConfig(node);
+function openFilePicker({ accept, directory = false } = {}) {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = mediaConfig.accept;
+    input.accept = accept || "";
     input.multiple = true;
+    if (directory) {
+        input.webkitdirectory = true;
+        input.directory = true;
+    }
     input.style.display = "none";
     document.body.appendChild(input);
 
-    input.onchange = async (event) => {
-        try {
-            const files = Array.from(event.target.files || []);
-            await uploadFilesSequential(node, files, { replace });
-        } finally {
-            document.body.removeChild(input);
-        }
-    };
+    return new Promise((resolve) => {
+        let resolved = false;
+        const cleanup = () => {
+            if (input.parentNode) input.parentNode.removeChild(input);
+            input.removeEventListener("change", onChange);
+            input.removeEventListener("cancel", onCancel);
+            window.removeEventListener("focus", onWindowFocus, true);
+        };
+        const finish = (files) => {
+            if (resolved) return;
+            resolved = true;
+            cleanup();
+            resolve(files);
+        };
+        const onChange = (event) => {
+            finish(Array.from(event.target.files || []));
+        };
+        const onCancel = () => {
+            finish([]);
+        };
+        const onWindowFocus = () => {
+            // Some browsers do not emit a cancel event for file pickers.
+            setTimeout(() => {
+                if (!resolved && !(input.files && input.files.length > 0)) {
+                    finish([]);
+                }
+            }, 200);
+        };
 
-    input.click();
+        input.addEventListener("change", onChange, { once: true });
+        input.addEventListener("cancel", onCancel, { once: true });
+        window.addEventListener("focus", onWindowFocus, true);
+        input.click();
+    });
 }
 
-export function openFolderSelect(node, { replace = false } = {}) {
+export async function openMultiSelect(node, { replace = false } = {}) {
     const mediaConfig = getMediaConfig(node);
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = mediaConfig.accept;
-    input.multiple = true;
-    input.webkitdirectory = true;
-    input.directory = true;
-    input.style.display = "none";
-    document.body.appendChild(input);
+    const files = await openFilePicker({ accept: mediaConfig.accept });
+    if (!files.length) return [];
+    return uploadFilesSequential(node, files, { replace });
+}
 
-    input.onchange = async (event) => {
-        try {
-            const files = Array.from(event.target.files || [])
-                .filter((file) => isAllowedMediaFile(file, mediaConfig, { allowMime: false }))
-                .sort((left, right) => (left.webkitRelativePath || left.name).localeCompare(right.webkitRelativePath || right.name));
-
-            await uploadFilesSequential(node, files, { replace });
-        } finally {
-            document.body.removeChild(input);
-        }
-    };
-
-    input.click();
+export async function openFolderSelect(node, { replace = false } = {}) {
+    const mediaConfig = getMediaConfig(node);
+    const files = await openFilePicker({ accept: mediaConfig.accept, directory: true });
+    const filteredFiles = files
+        .filter((file) => isAllowedMediaFile(file, mediaConfig, { allowMime: false }))
+        .sort((left, right) => (left.webkitRelativePath || left.name).localeCompare(right.webkitRelativePath || right.name));
+    if (!filteredFiles.length && !replace) return [];
+    return uploadFilesSequential(node, filteredFiles, { replace });
 }
