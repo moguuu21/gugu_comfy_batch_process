@@ -9,79 +9,81 @@ import {
     setMediaList,
     appendToFailedList,
 } from "./common.js";
-import { getInputViewUrl } from "./media_preview.js";
+import { getInputViewUrl } from "./media_view_url.js";
 import { SORT_OPTIONS, sortMediaList, fetchMediaMetadata } from "./media_sort.js";
 import { isFilesDragEvent, uploadFilesSequential, openMultiSelect, openFolderSelect } from "./media_upload.js";
 import { queueAllSequential, queueCurrentSingle, scanServerVideoDir } from "./media_queue.js";
 import { createFailedPanel } from "./media_failed.js";
 
-const domUIs = new Set();
-let globalDragDropInstalled = false;
-
 function isPointInRect(x, y, rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-function getUIUnderPointer(event) {
-    const x = event?.clientX;
-    const y = event?.clientY;
-    if (typeof x !== "number" || typeof y !== "number") return null;
+function createDragDropCoordinator({ node, container, redraw, setDragging }) {
+    let isUnregistered = false;
+    let isDragging = false;
 
-    for (const entry of domUIs) {
-        const rect = entry?.container?.getBoundingClientRect?.();
-        if (!rect) continue;
-        if (isPointInRect(x, y, rect)) return entry;
-    }
+    const setDraggingActive = (active) => {
+        if (isDragging === active) return;
+        isDragging = active;
+        setDragging?.(active);
+    };
 
-    return null;
-}
+    const unregister = () => {
+        if (isUnregistered) return;
+        isUnregistered = true;
+        setDraggingActive(false);
+        window.removeEventListener("dragover", onWindowDragOver, true);
+        window.removeEventListener("drop", onWindowDrop, true);
+        window.removeEventListener("dragleave", onWindowDragLeave, true);
+    };
 
-function setDraggingUI(activeEntry) {
-    for (const entry of domUIs) {
-        entry?.setDragging?.(entry === activeEntry);
-    }
-}
+    const ensureConnected = () => {
+        if (isUnregistered) return false;
+        if (container?.isConnected) return true;
+        unregister();
+        return false;
+    };
 
-function ensureGlobalDragDropPrevention() {
-    if (globalDragDropInstalled) return;
-    globalDragDropInstalled = true;
+    const isHit = (event) => {
+        const x = event?.clientX;
+        const y = event?.clientY;
+        if (typeof x !== "number" || typeof y !== "number") return false;
+        const rect = container?.getBoundingClientRect?.();
+        if (!rect) return false;
+        return isPointInRect(x, y, rect);
+    };
 
-    window.addEventListener(
-        "dragover",
-        (event) => {
-            if (!isFilesDragEvent(event)) return;
-            event.preventDefault();
-            setDraggingUI(getUIUnderPointer(event));
-        },
-        { capture: true }
-    );
+    const onWindowDragOver = (event) => {
+        if (!isFilesDragEvent(event) || !ensureConnected()) return;
+        event.preventDefault();
+        const hit = isHit(event);
+        setDraggingActive(hit);
+    };
 
-    window.addEventListener(
-        "drop",
-        async (event) => {
-            if (!isFilesDragEvent(event)) return;
-            event.preventDefault();
+    const onWindowDrop = async (event) => {
+        if (!isFilesDragEvent(event) || !ensureConnected()) return;
+        event.preventDefault();
+        const hit = isHit(event);
+        setDraggingActive(false);
+        if (!hit) return;
+        const files = Array.from(event.dataTransfer?.files || []);
+        if (!files.length) return;
+        await uploadFilesSequential(node, files, { replace: false });
+        redraw?.();
+    };
 
-            const hit = getUIUnderPointer(event);
-            setDraggingUI(null);
-            if (!hit) return;
+    const onWindowDragLeave = (event) => {
+        if (!isFilesDragEvent(event) || !ensureConnected()) return;
+        if (isHit(event)) return;
+        setDraggingActive(false);
+    };
 
-            const files = Array.from(event.dataTransfer?.files || []);
-            if (!files.length) return;
-            await uploadFilesSequential(hit.node, files, { replace: false });
-            hit.redraw?.();
-        },
-        { capture: true }
-    );
+    window.addEventListener("dragover", onWindowDragOver, true);
+    window.addEventListener("drop", onWindowDrop, true);
+    window.addEventListener("dragleave", onWindowDragLeave, true);
 
-    window.addEventListener(
-        "dragleave",
-        (event) => {
-            if (!isFilesDragEvent(event)) return;
-            setDraggingUI(null);
-        },
-        { capture: true }
-    );
+    return { unregister };
 }
 
 function mkBtn(label) {
@@ -275,14 +277,10 @@ function createBrowserUI(node) {
         event.stopPropagation();
     });
 
-    container.addEventListener("drop", async (event) => {
+    container.addEventListener("drop", (event) => {
         if (!isFilesDragEvent(event)) return;
         event.preventDefault();
         event.stopPropagation();
-        const files = Array.from(event.dataTransfer?.files || []);
-        if (!files.length) return;
-        await uploadFilesSequential(node, files, { replace: false });
-        redraw();
     });
 
     const setDragging = (active) => {
@@ -320,8 +318,6 @@ export function registerBatchLoadMediaExtension() {
             ]);
             if (!compatibleNodeNames.has(nodeData.name)) return;
 
-            ensureGlobalDragDropPrevention();
-
             const origOnNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const created = origOnNodeCreated?.apply(this, arguments);
@@ -354,15 +350,20 @@ export function registerBatchLoadMediaExtension() {
                 this.addDOMWidget("batch_load_images", "customwidget", ui.container);
                 this.setSize(isVideoListNode(this) ? [520, 390] : [420, 320]);
 
-                domUIs.add({ node: this, container: ui.container, redraw: ui.redraw, setDragging: ui.setDragging });
+                this._batchLoadImagesDragDropCoordinator?.unregister?.();
+                const dragDropCoordinator = createDragDropCoordinator({
+                    node: this,
+                    container: ui.container,
+                    redraw: ui.redraw,
+                    setDragging: ui.setDragging,
+                });
+                this._batchLoadImagesDragDropCoordinator = dragDropCoordinator;
 
                 const prevOnRemoved = this.onRemoved;
                 this.onRemoved = function () {
-                    for (const entry of domUIs) {
-                        if (entry?.node === this) {
-                            domUIs.delete(entry);
-                            break;
-                        }
+                    dragDropCoordinator.unregister();
+                    if (this._batchLoadImagesDragDropCoordinator === dragDropCoordinator) {
+                        this._batchLoadImagesDragDropCoordinator = null;
                     }
                     return prevOnRemoved?.apply(this, arguments);
                 };
