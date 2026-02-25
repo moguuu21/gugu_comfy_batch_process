@@ -23,6 +23,8 @@ const PIXELS_PER_LINE = 16;
 const wheelCtor = typeof WheelEvent === "function" ? WheelEvent : null;
 const DOM_DELTA_LINE = wheelCtor ? wheelCtor.DOM_DELTA_LINE : 1;
 const DOM_DELTA_PAGE = wheelCtor ? wheelCtor.DOM_DELTA_PAGE : 2;
+const THUMB_MEDIA_LAYER = 1;
+const THUMB_ACTION_LAYER = 3;
 
 let isGlobalWheelCaptureBound = false;
 
@@ -150,28 +152,47 @@ function createDragDropCoordinator({ node, container, redraw, setDragging }) {
         return false;
     };
 
-    const isHit = (event) => {
+    const resolveClientPoint = (event) => {
         const x = event?.clientX;
         const y = event?.clientY;
-        if (typeof x !== "number" || typeof y !== "number") return false;
+        if (typeof x !== "number" || typeof y !== "number") return null;
+        return { x, y };
+    };
+
+    const isHit = (event) => {
+        const point = resolveClientPoint(event);
+        if (!point) return false;
         const rect = container?.getBoundingClientRect?.();
         if (!rect) return false;
-        return isPointInRect(x, y, rect);
+        return isPointInRect(point.x, point.y, rect);
+    };
+
+    const isTopLayerHit = (event) => {
+        const point = resolveClientPoint(event);
+        if (!point) return false;
+        if (!isHit(event)) return false;
+        const topElement = document.elementFromPoint(point.x, point.y);
+        if (!(topElement instanceof Element)) return true;
+        return container?.contains(topElement) ?? false;
     };
 
     const onWindowDragOver = (event) => {
         if (!isFilesDragEvent(event) || !ensureConnected()) return;
-        event.preventDefault();
-        const hit = isHit(event);
+        const hit = isTopLayerHit(event);
+        if (hit) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
         setDraggingActive(hit);
     };
 
     const onWindowDrop = async (event) => {
         if (!isFilesDragEvent(event) || !ensureConnected()) return;
-        event.preventDefault();
-        const hit = isHit(event);
+        const hit = isTopLayerHit(event);
         setDraggingActive(false);
         if (!hit) return;
+        event.preventDefault();
+        event.stopPropagation();
         const files = Array.from(event.dataTransfer?.files || []);
         if (!files.length) return;
         try {
@@ -185,7 +206,7 @@ function createDragDropCoordinator({ node, container, redraw, setDragging }) {
 
     const onWindowDragLeave = (event) => {
         if (!isFilesDragEvent(event) || !ensureConnected()) return;
-        if (isHit(event)) return;
+        if (isTopLayerHit(event)) return;
         setDraggingActive(false);
     };
 
@@ -325,8 +346,25 @@ function createBrowserUI(node) {
             cell.style.cssText = "display:flex;flex-direction:column;gap:3px;";
             cell.draggable = true;
             cell.dataset.index = idx;
+            cell.addEventListener("pointerdown", (event) => {
+                const target = event.target;
+                const isNoDragZone =
+                    target instanceof Element && !!target.closest("[data-no-drag='true']");
+                cell.draggable = !isNoDragZone;
+            });
+            cell.addEventListener("pointerup", () => {
+                cell.draggable = true;
+            });
+            cell.addEventListener("pointercancel", () => {
+                cell.draggable = true;
+            });
 
             cell.ondragstart = (e) => {
+                if (!cell.draggable) {
+                    e.preventDefault();
+                    dragFromIdx = null;
+                    return;
+                }
                 dragFromIdx = idx;
                 e.dataTransfer.effectAllowed = "move";
                 e.dataTransfer.setData("text/plain", String(idx));
@@ -363,19 +401,21 @@ function createBrowserUI(node) {
 
             const thumb = document.createElement("div");
             thumb.style.cssText =
-                "position:relative;aspect-ratio:1;border-radius:4px;overflow:hidden;border:1px solid var(--border-color);background:#111;display:flex;align-items:center;justify-content:center;";
+                "position:relative;isolation:isolate;aspect-ratio:1;border-radius:4px;overflow:hidden;border:1px solid var(--border-color);background:#111;display:flex;align-items:center;justify-content:center;";
 
             const previewHint = name in cachedPreviews ? cachedPreviews[name] : undefined;
             if (!isVideo) {
                 const img = document.createElement("img");
                 img.src = resolvePreviewUrl(name, previewHint);
-                img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
+                img.style.cssText = `position:relative;z-index:${THUMB_MEDIA_LAYER};width:100%;height:100%;object-fit:cover;display:block;`;
                 img.draggable = false;
                 thumb.appendChild(img);
             } else {
                 import("./media_preview.js").then(({ createVideoThumb }) => {
                     const videoThumb = createVideoThumb(name, previewHint);
                     videoThumb.draggable = false;
+                    videoThumb.style.position = "relative";
+                    videoThumb.style.zIndex = String(THUMB_MEDIA_LAYER);
                     thumb.appendChild(videoThumb);
                 });
             }
@@ -383,11 +423,21 @@ function createBrowserUI(node) {
             const del = document.createElement("button");
             del.textContent = "x";
             del.title = "Remove";
+            del.dataset.noDrag = "true";
+            del.draggable = false;
             del.style.cssText =
-                "position:absolute;top:2px;right:2px;width:20px;height:20px;background:rgba(255,0,0,0.75);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:16px;line-height:1;";
+                `position:absolute;z-index:${THUMB_ACTION_LAYER};top:2px;right:2px;width:20px;height:20px;background:rgba(255,0,0,0.75);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:16px;line-height:1;pointer-events:auto;touch-action:manipulation;`;
+            del.onpointerdown = (event) => {
+                event.stopPropagation();
+            };
+            del.ondragstart = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            };
             del.onclick = (event) => {
                 event.preventDefault();
                 event.stopPropagation();
+                cell.draggable = true;
                 setMediaList(node, names.slice(0, idx).concat(names.slice(idx + 1)));
             };
 
