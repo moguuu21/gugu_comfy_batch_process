@@ -5,10 +5,8 @@ import os
 from aiohttp import web
 from server import PromptServer
 
-import folder_paths
-
-from .core import resolve_video_path
-from .services import build_video_scan_payload, resolve_preview_file
+from .core import resolve_image_path, resolve_video_path
+from .services import build_image_scan_payload, build_video_scan_payload, resolve_preview_file
 
 
 def _parse_non_negative_int(value: object, default: int = 0) -> int:
@@ -36,6 +34,25 @@ async def scan_video_dir(request):
     max_videos = _parse_non_negative_int(payload.get("max_videos", 0))
 
     return web.json_response(build_video_scan_payload(server_video_dir, max_videos))
+
+
+@PromptServer.instance.routes.post("/mogu_batch_process/scan_image_dir")
+async def scan_image_dir(request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    server_image_dir = str(payload.get("server_image_dir") or "").strip()
+    if not server_image_dir:
+        return web.json_response(
+            {"ok": False, "error": "server_image_dir is required", "items": []},
+            status=400,
+        )
+
+    max_images = _parse_non_negative_int(payload.get("max_images", 0))
+
+    return web.json_response(build_image_scan_payload(server_image_dir, max_images))
 
 
 @PromptServer.instance.routes.get("/mogu_batch_process/view_proxy")
@@ -75,13 +92,7 @@ async def get_media_metadata(request):
         if not isinstance(name, str) or not name:
             continue
 
-        filepath = None
-        # Try as image first
-        if folder_paths.exists_annotated_filepath(name):
-            filepath = folder_paths.get_annotated_filepath(name)
-        else:
-            # Try as video
-            filepath = resolve_video_path(name)
+        filepath = resolve_image_path(name) or resolve_video_path(name)
 
         if filepath and os.path.isfile(filepath):
             try:

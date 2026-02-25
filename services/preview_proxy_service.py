@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from ..core import VIDEO_EXTENSIONS
+from ..core import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 _TOKEN_TTL_SECONDS = 3600
 _MIN_TTL_SECONDS = 60
@@ -26,9 +26,12 @@ _token_lock = threading.Lock()
 _last_gc = 0.0
 
 
-def _is_valid_video_file(path: str) -> bool:
+_PREVIEWABLE_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+def _is_valid_preview_file(path: str) -> bool:
     ext = os.path.splitext(path)[1].lower()
-    return ext in VIDEO_EXTENSIONS and os.path.isfile(path)
+    return ext in _PREVIEWABLE_EXTENSIONS and os.path.isfile(path)
 
 
 def _remove_token(token: str) -> None:
@@ -46,7 +49,7 @@ def _prune_expired(now: float) -> None:
         return
     _last_gc = now
 
-    expired = [token for token, entry in _preview_tokens.items() if entry.expires_at <= now or not _is_valid_video_file(entry.path)]
+    expired = [token for token, entry in _preview_tokens.items() if entry.expires_at <= now or not _is_valid_preview_file(entry.path)]
     for token in expired:
         _remove_token(token)
 
@@ -61,7 +64,7 @@ def _prune_expired(now: float) -> None:
 
 def register_preview_file(file_path: str, ttl_seconds: int = _TOKEN_TTL_SECONDS) -> str | None:
     abs_path = os.path.abspath(file_path or "")
-    if not _is_valid_video_file(abs_path):
+    if not _is_valid_preview_file(abs_path):
         return None
 
     ttl = max(int(ttl_seconds), _MIN_TTL_SECONDS)
@@ -101,7 +104,7 @@ def resolve_preview_file(token: str, refresh_ttl_seconds: int = _TOKEN_TTL_SECON
             _remove_token(clean_token)
             return None
 
-        if not _is_valid_video_file(entry.path):
+        if not _is_valid_preview_file(entry.path):
             _remove_token(clean_token)
             return None
 

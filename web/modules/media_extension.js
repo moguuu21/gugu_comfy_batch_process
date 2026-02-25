@@ -1,4 +1,5 @@
 import { app } from "../../../../scripts/app.js";
+import { api } from "../../../../scripts/api.js";
 import {
     MEDIA_CONFIG,
     getMediaKind,
@@ -9,10 +10,10 @@ import {
     setMediaList,
     appendToFailedList,
 } from "./common.js";
-import { getInputViewUrl } from "./media_view_url.js";
+import { buildInputViewUrl, getInputViewUrl, parseInputPath } from "./media_view_url.js";
 import { SORT_OPTIONS, sortMediaList, fetchMediaMetadata } from "./media_sort.js";
 import { isFilesDragEvent, uploadFilesSequential, openMultiSelect, openFolderSelect } from "./media_upload.js";
-import { queueAllSequential, queueCurrentSingle, scanServerVideoDir } from "./media_queue.js";
+import { queueAllSequential, queueCurrentSingle, scanServerMediaDir } from "./media_queue.js";
 import { createFailedPanel } from "./media_failed.js";
 
 const SCROLLABLE_GRID_SELECTOR = ".mogu-batch-media-grid";
@@ -31,6 +32,31 @@ function isPointInRect(x, y, rect) {
 
 function formatErrorMessage(error) {
     return error?.message || String(error);
+}
+
+function buildProxyViewUrl(previewId) {
+    return api.apiURL(`/mogu_batch_process/view_proxy?id=${encodeURIComponent(previewId)}`);
+}
+
+function parsePreviewFilePath(previewHint) {
+    const filename = String(previewHint?.filename || "").trim();
+    if (!filename) return null;
+    const subfolder = typeof previewHint?.subfolder === "string" ? previewHint.subfolder.trim() : "";
+    return parseInputPath(subfolder ? `${subfolder}/${filename}` : filename);
+}
+
+function resolvePreviewUrl(path, previewHint, { withPreview = true } = {}) {
+    if (previewHint === false) return "";
+    if (previewHint && typeof previewHint === "object" && typeof previewHint.proxy_id === "string" && previewHint.proxy_id.trim()) {
+        return buildProxyViewUrl(previewHint.proxy_id.trim());
+    }
+    if (previewHint && typeof previewHint === "object" && typeof previewHint.filename === "string" && previewHint.filename.trim()) {
+        const parsedHint = parsePreviewFilePath(previewHint);
+        if (parsedHint) {
+            return buildInputViewUrl(parsedHint, { withPreview });
+        }
+    }
+    return getInputViewUrl(path, { withPreview });
 }
 
 function runWithUiError(label, action, { logPrefix = "GuguBatchLoadImages" } = {}) {
@@ -339,14 +365,14 @@ function createBrowserUI(node) {
             thumb.style.cssText =
                 "position:relative;aspect-ratio:1;border-radius:4px;overflow:hidden;border:1px solid var(--border-color);background:#111;display:flex;align-items:center;justify-content:center;";
 
+            const previewHint = name in cachedPreviews ? cachedPreviews[name] : undefined;
             if (!isVideo) {
                 const img = document.createElement("img");
-                img.src = getInputViewUrl(name);
+                img.src = resolvePreviewUrl(name, previewHint);
                 img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
                 img.draggable = false;
                 thumb.appendChild(img);
             } else {
-                const previewHint = name in cachedPreviews ? cachedPreviews[name] : undefined;
                 import("./media_preview.js").then(({ createVideoThumb }) => {
                     const videoThumb = createVideoThumb(name, previewHint);
                     videoThumb.draggable = false;
@@ -476,12 +502,13 @@ export function registerBatchLoadMediaExtension() {
                 const ui = createBrowserUI(this);
                 this._batchLoadImagesUI = ui;
 
-                if (isVideoListNode(this)) {
+                const serverDirWidgetName = isVideoListNode(this) ? "server_video_dir" : "server_image_dir";
+                if (getWidgetByName(this, serverDirWidgetName)) {
                     const scanWidgetName = "Scan";
                     if (!getWidgetByName(this, scanWidgetName)) {
                         this.addWidget("button", scanWidgetName, null, () => {
                             runWithUiError("Scan failed", async () => {
-                                const result = await scanServerVideoDir(this);
+                                const result = await scanServerMediaDir(this);
                                 ui.setPreviews(result.previews);
                                 const changed = setMediaList(this, result.items);
                                 if (!changed) ui.redraw();
@@ -491,7 +518,7 @@ export function registerBatchLoadMediaExtension() {
                 }
 
                 this.addDOMWidget("batch_load_images", "customwidget", ui.container);
-                this.setSize(isVideoListNode(this) ? [520, 390] : [420, 320]);
+                this.setSize(getWidgetByName(this, serverDirWidgetName) ? [520, 390] : [420, 320]);
 
                 this._batchLoadImagesDragDropCoordinator?.unregister?.();
                 const dragDropCoordinator = createDragDropCoordinator({

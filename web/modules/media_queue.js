@@ -75,26 +75,43 @@ export async function queueCurrentSingle(node) {
     await queueCurrent();
 }
 
-export async function scanServerVideoDir(node) {
-    if (!isVideoListNode(node)) return { items: [], previews: {}, count: 0, total: 0 };
-
-    const serverVideoDir = String(getWidgetByName(node, "server_video_dir")?.value || "").trim();
-    if (!serverVideoDir) {
-        throw new Error("server_video_dir is empty");
+function getScanConfig(node) {
+    if (isVideoListNode(node)) {
+        return {
+            endpoint: "/mogu_batch_process/scan_video_dir",
+            dirKey: "server_video_dir",
+            maxKey: "max_videos",
+            noun: "video",
+        };
     }
-    if (/[\u0000\r\n]/.test(serverVideoDir)) {
-        throw new Error("server_video_dir contains invalid control characters");
+
+    return {
+        endpoint: "/mogu_batch_process/scan_image_dir",
+        dirKey: "server_image_dir",
+        maxKey: "max_images",
+        noun: "image",
+    };
+}
+
+export async function scanServerMediaDir(node) {
+    const scanConfig = getScanConfig(node);
+    const serverDir = String(getWidgetByName(node, scanConfig.dirKey)?.value || "").trim();
+    if (!serverDir) {
+        throw new Error(`${scanConfig.dirKey} is empty`);
+    }
+    if (/[\u0000\r\n]/.test(serverDir)) {
+        throw new Error(`${scanConfig.dirKey} contains invalid control characters`);
     }
 
-    const maxVideos = getMaxMediaCountValue(node);
-    const response = await api.fetchApi("/mogu_batch_process/scan_video_dir", {
+    const maxCount = getMaxMediaCountValue(node);
+    const response = await api.fetchApi(scanConfig.endpoint, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            server_video_dir: serverVideoDir,
-            max_videos: maxVideos,
+            [scanConfig.dirKey]: serverDir,
+            [scanConfig.maxKey]: maxCount,
         }),
     });
 
@@ -106,7 +123,7 @@ export async function scanServerVideoDir(node) {
     }
 
     if (!response.ok || payload?.ok === false) {
-        const message = payload?.error || `Scan failed (${response.status})`;
+        const message = payload?.error || `${scanConfig.noun} scan failed (${response.status})`;
         throw new Error(message);
     }
 
@@ -118,4 +135,8 @@ export async function scanServerVideoDir(node) {
         count: typeof payload?.count === "number" ? payload.count : items.length,
         total: typeof payload?.total === "number" ? payload.total : items.length,
     };
+}
+
+export async function scanServerVideoDir(node) {
+    return scanServerMediaDir(node);
 }

@@ -8,6 +8,7 @@ import folder_paths
 from .list_utils import apply_limit, parse_multiline_list, pick_mode_items
 
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv", ".m4v"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif"}
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,12 @@ class InputViewParams:
 
 @dataclass(frozen=True)
 class ScannedVideoEntry:
+    path: str
+    preview: InputViewParams | None
+
+
+@dataclass(frozen=True)
+class ScannedImageEntry:
     path: str
     preview: InputViewParams | None
 
@@ -79,29 +86,60 @@ def is_previewable_path(path: str) -> bool:
     return build_input_view_params(path) is not None
 
 
-def list_videos_from_server_dir(server_video_dir: str) -> list[ScannedVideoEntry]:
-    server_video_dir = (server_video_dir or "").strip()
-    if not server_video_dir:
+def _list_media_from_server_dir(server_dir: str, allowed_extensions: set[str]) -> list[tuple[str, InputViewParams | None]]:
+    server_dir = (server_dir or "").strip()
+    if not server_dir:
         return []
 
     input_dir = folder_paths.get_input_directory()
-    base_dir = server_video_dir if os.path.isabs(server_video_dir) else os.path.join(input_dir, server_video_dir)
+    base_dir = server_dir if os.path.isabs(server_dir) else os.path.join(input_dir, server_dir)
     if not os.path.isdir(base_dir):
         return []
 
-    results: list[ScannedVideoEntry] = []
+    results: list[tuple[str, InputViewParams | None]] = []
     for root, _, files in os.walk(base_dir):
         for file_name in files:
             ext = os.path.splitext(file_name)[1].lower()
-            if ext not in VIDEO_EXTENSIONS:
+            if ext not in allowed_extensions:
                 continue
             abs_path = os.path.join(root, file_name)
             resolved_path = to_input_relative_or_abs(abs_path, input_dir)
             preview = build_input_view_params(resolved_path, input_dir=input_dir)
-            results.append(ScannedVideoEntry(path=resolved_path, preview=preview))
+            results.append((resolved_path, preview))
 
-    results.sort(key=lambda entry: entry.path)
+    results.sort(key=lambda entry: entry[0])
     return results
+
+
+def list_videos_from_server_dir(server_video_dir: str) -> list[ScannedVideoEntry]:
+    entries = _list_media_from_server_dir(server_video_dir, VIDEO_EXTENSIONS)
+    return [ScannedVideoEntry(path=path, preview=preview) for path, preview in entries]
+
+
+def list_images_from_server_dir(server_image_dir: str) -> list[ScannedImageEntry]:
+    entries = _list_media_from_server_dir(server_image_dir, IMAGE_EXTENSIONS)
+    return [ScannedImageEntry(path=path, preview=preview) for path, preview in entries]
+
+
+def resolve_image_path(name: str) -> str | None:
+    if not name:
+        return None
+
+    clean_name = name.strip()
+    if not clean_name:
+        return None
+
+    if folder_paths.exists_annotated_filepath(clean_name):
+        return folder_paths.get_annotated_filepath(clean_name)
+
+    if os.path.isfile(clean_name):
+        return clean_name
+
+    candidate = os.path.join(folder_paths.get_input_directory(), clean_name)
+    if os.path.isfile(candidate):
+        return candidate
+
+    return None
 
 
 def list_video_candidates(video_list: str, max_videos: int, server_video_dir: str) -> list[str]:
