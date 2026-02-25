@@ -33,7 +33,7 @@ function formatErrorMessage(error) {
     return error?.message || String(error);
 }
 
-function runWithUiError(label, action, { logPrefix = "BatchLoadImages" } = {}) {
+function runWithUiError(label, action, { logPrefix = "GuguBatchLoadImages" } = {}) {
     void Promise.resolve()
         .then(action)
         .catch((error) => {
@@ -151,7 +151,7 @@ function createDragDropCoordinator({ node, container, redraw, setDragging }) {
         try {
             await uploadFilesSequential(node, files, { replace: false });
         } catch (error) {
-            console.error("[BatchLoadImages] Drag-and-drop upload failed:", error);
+            console.error("[GuguBatchLoadImages] Drag-and-drop upload failed:", error);
             alert(`Upload failed: ${formatErrorMessage(error)}`);
             redraw?.();
         }
@@ -455,12 +455,10 @@ function createBrowserUI(node) {
 
 export function registerBatchLoadMediaExtension() {
     app.registerExtension({
-        name: "BatchLoadImages.Extension",
+        name: "GuguBatchLoadImages.Extension",
         async beforeRegisterNodeDef(nodeType, nodeData) {
             const compatibleNodeNames = new Set([
-                "BatchLoadImages",
-                "gugu_BatchLoadImages",
-                "ComfyUI-IAI666-BatchLoadImages",
+                "GuguBatchLoadImages",
                 "gugu_BatchLoadVideos",
             ]);
             if (!compatibleNodeNames.has(nodeData.name)) return;

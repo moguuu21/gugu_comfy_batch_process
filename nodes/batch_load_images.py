@@ -17,7 +17,7 @@ from ..core import (
 from ..services import load_image_tensor
 
 
-class BatchLoadImages:
+class GuguBatchLoadImages:
     @classmethod
     def INPUT_TYPES(cls):
         return {

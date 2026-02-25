@@ -1,13 +1,9 @@
-from .batch_load_images import BatchLoadImages
+from .batch_load_images import GuguBatchLoadImages
 from .batch_load_videos import GuguBatchLoadVideos
-from .registry import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
-from .vnccs import VNCCS_PositionControl, VNCCS_VisualPositionControl
+from .registry import NODE_CLASS_MAPPINGS
 
 __all__ = [
-    "BatchLoadImages",
+    "GuguBatchLoadImages",
     "GuguBatchLoadVideos",
     "NODE_CLASS_MAPPINGS",
-    "NODE_DISPLAY_NAME_MAPPINGS",
-    "VNCCS_PositionControl",
-    "VNCCS_VisualPositionControl",
 ]
