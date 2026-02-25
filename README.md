@@ -1,5 +1,7 @@
 # mogu_comfy_batch_process
 
+![gugu_BatchLoadVideos 节点示意图](assets/image_553.png)
+
 ComfyUI 自定义节点集合，提供批量图片/视频加载、媒体列表管理与失败项回收功能。
 
 ## 项目来源声明
